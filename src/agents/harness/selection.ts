@@ -37,7 +37,7 @@ import {
   normalizeToolName,
   resolveToolProfilePolicy,
 } from "../tool-policy.js";
-import { createOpenClawAgentHarness } from "./builtin-mo.js";
+import { createOpenClawAgentHarness } from "./builtin-openclaw.js";
 import { MissingAgentHarnessError } from "./errors.js";
 import { runAgentHarnessLifecycleAttempt } from "./lifecycle.js";
 import {

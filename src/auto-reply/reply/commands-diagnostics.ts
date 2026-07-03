@@ -15,7 +15,7 @@ import { rejectNonOwnerCommand } from "./command-gates.js";
 import {
   buildCurrentOpenClawCliCommand,
   buildCurrentOpenClawCliExecEnv,
-} from "./commands-mo-cli.js";
+} from "./commands-openclaw-cli.js";
 import {
   deliverPrivateCommandReply,
   readCommandDeliveryTarget,
