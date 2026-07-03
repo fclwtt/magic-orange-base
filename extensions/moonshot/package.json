@@ -1,0 +1,35 @@
+{
+  "name": "@mo/moonshot-provider",
+  "version": "2026.6.11",
+  "description": "OpenClaw Moonshot provider plugin",
+  "type": "module",
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*"
+  },
+  "mo": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "clawhubSpec": "clawhub:@mo/moonshot-provider",
+      "npmSpec": "@mo/moonshot-provider",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.6.9"
+    },
+    "compat": {
+      "pluginApi": ">=2026.6.11"
+    },
+    "build": {
+      "moVersion": "2026.6.11",
+      "bundledDist": false
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mo/mo"
+  }
+}

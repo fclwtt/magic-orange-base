@@ -1,0 +1,20 @@
+{
+  "name": "@mo/pixverse-provider",
+  "version": "2026.6.11",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "@mo/pixverse-provider",
+      "version": "2026.6.11",
+      "peerDependencies": {
+        "mo": ">=2026.6.11"
+      },
+      "peerDependenciesMeta": {
+        "mo": {
+          "optional": true
+        }
+      }
+    }
+  }
+}

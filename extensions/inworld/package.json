@@ -1,0 +1,35 @@
+{
+  "name": "@mo/inworld-speech",
+  "version": "2026.6.11",
+  "description": "OpenClaw Inworld speech plugin.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mo/mo"
+  },
+  "type": "module",
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*"
+  },
+  "mo": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "clawhubSpec": "clawhub:@mo/inworld-speech",
+      "npmSpec": "@mo/inworld-speech",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.6.8"
+    },
+    "compat": {
+      "pluginApi": ">=2026.6.11"
+    },
+    "build": {
+      "moVersion": "2026.6.11",
+      "bundledDist": false
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  }
+}

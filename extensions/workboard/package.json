@@ -1,0 +1,27 @@
+{
+  "name": "@mo/workboard",
+  "version": "2026.6.11",
+  "private": true,
+  "description": "OpenClaw dashboard workboard plugin",
+  "type": "module",
+  "dependencies": {
+    "typebox": "1.1.39"
+  },
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*",
+    "mo": "workspace:*"
+  },
+  "peerDependencies": {
+    "mo": ">=2026.6.11"
+  },
+  "peerDependenciesMeta": {
+    "mo": {
+      "optional": true
+    }
+  },
+  "mo": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

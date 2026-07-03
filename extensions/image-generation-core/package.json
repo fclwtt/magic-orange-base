@@ -1,0 +1,10 @@
+{
+  "name": "@mo/image-generation-core",
+  "version": "2026.6.11",
+  "private": true,
+  "description": "OpenClaw image generation runtime package",
+  "type": "module",
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*"
+  }
+}

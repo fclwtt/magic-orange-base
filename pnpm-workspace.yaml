@@ -1,0 +1,18 @@
+packages:
+  - packages/*
+  - extensions/*
+  - loop-modules
+
+minimumReleaseAge: 2880
+
+nodeLinker: hoisted
+blockExoticSubdeps: true
+allowBuilds:
+  '@google/genai': true
+  '@matrix-org/matrix-sdk-crypto-nodejs': true
+  '@tloncorp/tlon-skill': true
+  baileys: true
+  esbuild: true
+  node-llama-cpp: true
+  protobufjs: true
+  tree-sitter-bash: true

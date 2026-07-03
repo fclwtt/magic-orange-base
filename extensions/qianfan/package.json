@@ -1,0 +1,35 @@
+{
+  "name": "@mo/qianfan-provider",
+  "version": "2026.6.11",
+  "description": "OpenClaw Qianfan provider plugin.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mo/mo"
+  },
+  "type": "module",
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*"
+  },
+  "mo": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "clawhubSpec": "clawhub:@mo/qianfan-provider",
+      "npmSpec": "@mo/qianfan-provider",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.6.8"
+    },
+    "compat": {
+      "pluginApi": ">=2026.6.11"
+    },
+    "build": {
+      "moVersion": "2026.6.11",
+      "bundledDist": false
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@mo/policy",
+  "version": "2026.6.11",
+  "private": true,
+  "description": "OpenClaw policy doctor checks for workspace conformance",
+  "type": "module",
+  "dependencies": {
+    "json5": "2.2.3"
+  },
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*",
+    "mo": "workspace:*"
+  },
+  "peerDependencies": {
+    "mo": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "mo": {
+      "optional": true
+    }
+  },
+  "mo": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "name": "@mo/mattermost",
+  "version": "2026.6.11",
+  "description": "OpenClaw Mattermost channel plugin",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mo/mo"
+  },
+  "type": "module",
+  "dependencies": {
+    "ws": "8.21.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*",
+    "mo": "workspace:*"
+  },
+  "peerDependencies": {
+    "mo": ">=2026.6.11"
+  },
+  "peerDependenciesMeta": {
+    "mo": {
+      "optional": true
+    }
+  },
+  "mo": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "setupEntry": "./setup-entry.ts",
+    "channel": {
+      "id": "mattermost",
+      "label": "Mattermost",
+      "selectionLabel": "Mattermost (plugin)",
+      "docsPath": "/channels/mattermost",
+      "docsLabel": "mattermost",
+      "blurb": "self-hosted Slack-style chat; install the plugin to enable.",
+      "order": 65
+    },
+    "install": {
+      "clawhubSpec": "clawhub:@mo/mattermost",
+      "npmSpec": "@mo/mattermost",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.6.9",
+      "allowInvalidConfigRecovery": true
+    },
+    "compat": {
+      "pluginApi": ">=2026.6.11"
+    },
+    "build": {
+      "moVersion": "2026.6.11",
+      "bundledDist": false
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  }
+}

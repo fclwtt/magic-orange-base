@@ -1,0 +1,35 @@
+{
+  "name": "@mo/perplexity-plugin",
+  "version": "2026.6.11",
+  "description": "OpenClaw Perplexity plugin.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mo/mo"
+  },
+  "type": "module",
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*"
+  },
+  "mo": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "clawhubSpec": "clawhub:@mo/perplexity-plugin",
+      "npmSpec": "@mo/perplexity-plugin",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.6.8"
+    },
+    "compat": {
+      "pluginApi": ">=2026.6.11"
+    },
+    "build": {
+      "moVersion": "2026.6.11",
+      "bundledDist": false
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  }
+}

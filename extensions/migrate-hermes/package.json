@@ -1,0 +1,27 @@
+{
+  "name": "@mo/migrate-hermes",
+  "version": "2026.6.11",
+  "private": true,
+  "description": "Hermes to OpenClaw migration provider",
+  "type": "module",
+  "dependencies": {
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*",
+    "mo": "workspace:*"
+  },
+  "peerDependencies": {
+    "mo": ">=2026.6.11"
+  },
+  "peerDependenciesMeta": {
+    "mo": {
+      "optional": true
+    }
+  },
+  "mo": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

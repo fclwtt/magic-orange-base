@@ -1,0 +1,11 @@
+{
+  "name": "@mo/media-understanding-core",
+  "version": "2026.6.11",
+  "private": true,
+  "description": "OpenClaw media understanding runtime package",
+  "type": "module",
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*"
+  },
+  "mo": {}
+}

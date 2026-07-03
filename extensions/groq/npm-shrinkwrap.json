@@ -1,0 +1,12 @@
+{
+  "name": "@mo/groq-provider",
+  "version": "2026.6.11",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "@mo/groq-provider",
+      "version": "2026.6.11"
+    }
+  }
+}

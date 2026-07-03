@@ -1,0 +1,18 @@
+{
+  "name": "@magic-orange/loop-core",
+  "version": "0.1.0",
+  "description": "Optional Outer Loop orchestration module for Magic Orange Base",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest"
+  },
+  "keywords": ["ai", "agent", "loop", "orchestration"],
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^6.0.0"
+  }
+}

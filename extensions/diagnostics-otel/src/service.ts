@@ -1,0 +1,3894 @@
+// Diagnostics Otel plugin module implements service behavior.
+import {
+  context as otelContextApi,
+  metrics,
+  trace,
+  SpanKind,
+  SpanStatusCode,
+  TraceFlags,
+} from "@opentelemetry/api";
+import type { SpanContext } from "@opentelemetry/api";
+import type { LogRecord, SeverityNumber } from "@opentelemetry/api-logs";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
+import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import {
+  BatchSpanProcessor,
+  ParentBasedSampler,
+  TraceIdRatioBasedSampler,
+} from "@opentelemetry/sdk-trace-base";
+import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import {
+  ATTR_GEN_AI_INPUT_MESSAGES,
+  ATTR_GEN_AI_OUTPUT_MESSAGES,
+  ATTR_GEN_AI_SYSTEM_INSTRUCTIONS,
+  ATTR_GEN_AI_TOOL_DEFINITIONS,
+} from "@opentelemetry/semantic-conventions/incubating";
+import { waitForDiagnosticEventsDrained } from "mo/plugin-sdk/diagnostic-runtime";
+import { registerUnhandledRejectionHandler } from "mo/plugin-sdk/runtime-env";
+import type {
+  DiagnosticEventMetadata,
+  DiagnosticEventPayload,
+  DiagnosticTraceContext,
+  OpenClawPluginService,
+} from "../api.js";
+import {
+  isValidDiagnosticSpanId,
+  isValidDiagnosticTraceFlags,
+  isValidDiagnosticTraceId,
+  redactSensitiveText,
+} from "../api.js";
+
+const DEFAULT_SERVICE_NAME = "mo";
+const DROPPED_OTEL_ATTRIBUTE_KEYS = new Set([
+  "mo.callId",
+  "mo.call_id",
+  "mo.chatId",
+  "mo.chat_id",
+  "mo.messageId",
+  "mo.message_id",
+  "mo.parentSpanId",
+  "mo.parent_span_id",
+  "mo.runId",
+  "mo.run_id",
+  "mo.sessionId",
+  "mo.session_id",
+  "mo.sessionKey",
+  "mo.session_key",
+  "mo.spanId",
+  "mo.span_id",
+  "mo.toolCallId",
+  "mo.tool_call_id",
+  "mo.traceId",
+  "mo.trace_id",
+]);
+const LOW_CARDINALITY_VALUE_RE = /^[A-Za-z0-9_.:-]{1,120}$/u;
+const SECURITY_TARGET_NAME_VALUE_RE = /^[A-Za-z0-9@/_.:-]{1,256}$/u;
+const MAX_OTEL_CONTENT_ATTRIBUTE_CHARS = 128 * 1024;
+const MAX_OTEL_CONTENT_ARRAY_ITEMS = 200;
+const MAX_OTEL_LOG_BODY_CHARS = 4 * 1024;
+const MAX_OTEL_LOG_ATTRIBUTE_COUNT = 64;
+const MAX_OTEL_LOG_ATTRIBUTE_VALUE_CHARS = 4 * 1024;
+const LOG_RECORD_EXPORT_FAILURE_REPORT_INTERVAL_MS = 60_000;
+const OTEL_LOG_RAW_ATTRIBUTE_KEY_RE = /^[A-Za-z0-9_.:-]{1,64}$/u;
+const OTEL_LOG_ATTRIBUTE_KEY_RE = /^[A-Za-z0-9_.:-]{1,96}$/u;
+const BLOCKED_OTEL_LOG_ATTRIBUTE_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+const PRELOADED_OTEL_SDK_ENV = "MO_OTEL_PRELOADED";
+const OTEL_EXPORTER_OTLP_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT";
+const OTEL_EXPORTER_OTLP_TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT";
+const OTEL_EXPORTER_OTLP_METRICS_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT";
+const OTEL_EXPORTER_OTLP_LOGS_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT";
+const OTEL_SEMCONV_STABILITY_OPT_IN_ENV = "OTEL_SEMCONV_STABILITY_OPT_IN";
+const GEN_AI_LATEST_EXPERIMENTAL_OPT_IN = "gen_ai_latest_experimental";
+const GEN_AI_TOKEN_USAGE_BUCKETS = [
+  1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864,
+];
+const GEN_AI_OPERATION_DURATION_BUCKETS = [
+  0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92,
+];
+const MAX_RETAINED_TRUSTED_SPAN_CONTEXTS = 1024;
+const RETAINED_TRUSTED_SPAN_CONTEXT_TIMEOUT_MS = 5_000;
+
+type OtelContentCapturePolicy = {
+  inputMessages: boolean;
+  outputMessages: boolean;
+  toolInputs: boolean;
+  toolOutputs: boolean;
+  systemPrompt: boolean;
+  toolDefinitions: boolean;
+  logBodies: boolean;
+};
+
+type OtelLogsExporter = "otlp" | "stdout" | "both";
+
+type BuiltOtelLogRecord = {
+  logRecord: LogRecord;
+  traceContext?: DiagnosticTraceContext;
+};
+
+type OtelModelCallContent = {
+  inputMessages?: unknown;
+  outputMessages?: unknown;
+  systemPrompt?: string;
+  toolDefinitions?: unknown;
+};
+
+type OtelToolCallContent = {
+  toolInput?: unknown;
+  toolOutput?: unknown;
+};
+
+type MessageDeliveryDiagnosticEvent = Extract<
+  DiagnosticEventPayload,
+  {
+    type: "message.delivery.started" | "message.delivery.completed" | "message.delivery.error";
+  }
+>;
+type ModelCallLifecycleDiagnosticEvent = Extract<
+  DiagnosticEventPayload,
+  { type: "model.call.completed" | "model.call.error" }
+>;
+type ModelFailoverDiagnosticEvent = Extract<DiagnosticEventPayload, { type: "model.failover" }>;
+type HarnessRunDiagnosticEvent = Extract<
+  DiagnosticEventPayload,
+  { type: "harness.run.started" | "harness.run.completed" | "harness.run.error" }
+>;
+type TelemetryExporterDiagnosticEvent = Extract<
+  DiagnosticEventPayload,
+  { type: "telemetry.exporter" }
+>;
+type SessionRecoveryDiagnosticEvent = Extract<
+  DiagnosticEventPayload,
+  { type: "session.recovery.requested" | "session.recovery.completed" }
+>;
+type TalkDiagnosticEvent = Extract<DiagnosticEventPayload, { type: "talk.event" }>;
+type SecuritySeverityText = "FATAL" | "ERROR" | "WARN" | "INFO";
+type TrustedSpanAliasOwner = { kind: "run"; id: string };
+
+const NO_CONTENT_CAPTURE: OtelContentCapturePolicy = {
+  inputMessages: false,
+  outputMessages: false,
+  toolInputs: false,
+  toolOutputs: false,
+  systemPrompt: false,
+  toolDefinitions: false,
+  logBodies: false,
+};
+
+function normalizeEndpoint(endpoint?: string): string | undefined {
+  const trimmed = endpoint?.trim();
+  return trimmed ? trimmed.replace(/\/+$/, "") : undefined;
+}
+
+function resolveOtelUrl(endpoint: string | undefined, path: string): string | undefined {
+  if (!endpoint) {
+    return undefined;
+  }
+  const endpointWithoutQueryOrFragment = endpoint.split(/[?#]/, 1)[0] ?? endpoint;
+  if (/\/v1\/(?:traces|metrics|logs)$/i.test(endpointWithoutQueryOrFragment)) {
+    return endpoint;
+  }
+  if (/[?#]/u.test(endpoint)) {
+    try {
+      const url = new URL(endpoint);
+      const basePath = url.pathname.replace(/\/+$/u, "");
+      url.pathname = `${basePath}/${path}`;
+      return url.toString();
+    } catch {
+      // Fall back to the historical concatenation path for non-URL test doubles.
+    }
+  }
+  return `${endpoint}/${path}`;
+}
+
+function resolveSignalOtelUrl(params: {
+  signalEndpoint?: string;
+  signalEnvEndpoint?: string;
+  endpoint?: string;
+  path: string;
+}): string | undefined {
+  return resolveOtelUrl(
+    normalizeEndpoint(params.signalEndpoint ?? params.signalEnvEndpoint) ?? params.endpoint,
+    params.path,
+  );
+}
+
+function resolveSampleRate(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  if (value < 0 || value > 1) {
+    return undefined;
+  }
+  return value;
+}
+
+function formatError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.stack ?? err.message;
+  }
+  if (typeof err === "string") {
+    return err;
+  }
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+function errorCategory(err: unknown): string {
+  try {
+    if (err instanceof Error && typeof err.name === "string" && err.name.trim()) {
+      return lowCardinalityAttr(err.name, "Error");
+    }
+    return lowCardinalityAttr(typeof err, "unknown");
+  } catch {
+    return "unknown";
+  }
+}
+
+function collectNestedErrorCandidates(err: unknown): unknown[] {
+  const queue: unknown[] = [err];
+  const seen = new Set<unknown>();
+  const candidates: unknown[] = [];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current == null || seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+    candidates.push(current);
+
+    if (Array.isArray(current)) {
+      for (const item of current) {
+        if (item != null && !seen.has(item)) {
+          queue.push(item);
+        }
+      }
+      continue;
+    }
+    if (typeof current !== "object") {
+      continue;
+    }
+
+    const record = current as Record<string, unknown>;
+    for (const nested of [record.cause, record.reason, record.original, record.error]) {
+      if (nested != null && !seen.has(nested)) {
+        queue.push(nested);
+      }
+    }
+    if (Array.isArray(record.errors)) {
+      for (const nested of record.errors) {
+        if (nested != null && !seen.has(nested)) {
+          queue.push(nested);
+        }
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function readErrorName(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") {
+    return undefined;
+  }
+  const name = (err as { name?: unknown }).name;
+  return typeof name === "string" && name.trim() ? name : undefined;
+}
+
+function readErrorCode(err: unknown): string | number | undefined {
+  if (!err || typeof err !== "object") {
+    return undefined;
+  }
+  const code = (err as { code?: unknown }).code;
+  return typeof code === "string" || typeof code === "number" ? code : undefined;
+}
+
+function findOtlpExporterError(reason: unknown): object | undefined {
+  for (const candidate of collectNestedErrorCandidates(reason)) {
+    if (
+      readErrorName(candidate) === "OTLPExporterError" &&
+      candidate &&
+      typeof candidate === "object"
+    ) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function redactOtelAttributes(attributes: Record<string, string | number | boolean>) {
+  const redactedAttributes: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(attributes)) {
+    if (DROPPED_OTEL_ATTRIBUTE_KEYS.has(key)) {
+      continue;
+    }
+    redactedAttributes[key] = typeof value === "string" ? redactSensitiveText(value) : value;
+  }
+  return redactedAttributes;
+}
+
+function lowCardinalityAttr(value: string | undefined, fallback = "unknown"): string {
+  if (!value) {
+    return fallback;
+  }
+  const redacted = redactSensitiveText(value.trim());
+  const redactedLower = redacted.toLowerCase();
+  if (redactedLower.startsWith("agent:") || redactedLower.includes(":agent:")) {
+    return fallback;
+  }
+  return LOW_CARDINALITY_VALUE_RE.test(redacted) ? redacted : fallback;
+}
+
+function securityTargetNameAttr(value: string | undefined, fallback = "unknown"): string {
+  if (!value) {
+    return fallback;
+  }
+  const redacted = redactSensitiveText(value.trim());
+  const redactedLower = redacted.toLowerCase();
+  if (redactedLower.startsWith("agent:") || redactedLower.includes(":agent:")) {
+    return fallback;
+  }
+  return SECURITY_TARGET_NAME_VALUE_RE.test(redacted) ? redacted : fallback;
+}
+
+function lowCardinalityQueueLaneAttr(value: string | undefined, fallback = "unknown"): string {
+  if (!value) {
+    return fallback;
+  }
+  const redacted = redactSensitiveText(value.trim());
+  const redactedLower = redacted.toLowerCase();
+  if (redactedLower.startsWith("agent:")) {
+    return fallback;
+  }
+  const scopedLaneIndex = redacted.indexOf(":");
+  const lane = scopedLaneIndex >= 0 ? redacted.slice(0, scopedLaneIndex) : redacted;
+  return LOW_CARDINALITY_VALUE_RE.test(lane) ? lane : fallback;
+}
+
+function shouldCaptureOtelLogBody(policy: OtelContentCapturePolicy): boolean {
+  return policy.logBodies;
+}
+
+function otelLogTimestampIso(timestamp: LogRecord["timestamp"]): string {
+  if (timestamp instanceof Date) {
+    return timestamp.toISOString();
+  }
+  if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+    return new Date(timestamp).toISOString();
+  }
+  if (Array.isArray(timestamp)) {
+    const [seconds, nanoseconds] = timestamp;
+    if (Number.isFinite(seconds) && Number.isFinite(nanoseconds)) {
+      return new Date(seconds * 1000 + Math.trunc(nanoseconds / 1_000_000)).toISOString();
+    }
+  }
+  return new Date().toISOString();
+}
+
+function writeStdoutDiagnosticLogRecord(params: {
+  logRecord: LogRecord;
+  serviceName: string;
+  traceContext?: DiagnosticTraceContext;
+}): void {
+  const { logRecord, serviceName, traceContext } = params;
+  const line = {
+    ts: otelLogTimestampIso(logRecord.timestamp),
+    signal: "mo.diagnostic.log",
+    "service.name": serviceName,
+    severityText: logRecord.severityText,
+    severityNumber: logRecord.severityNumber,
+    body: logRecord.body,
+    attributes: logRecord.attributes ?? {},
+    ...(traceContext?.traceId ? { trace_id: traceContext.traceId } : {}),
+    ...(traceContext?.spanId ? { span_id: traceContext.spanId } : {}),
+    ...(traceContext?.traceFlags ? { trace_flags: traceContext.traceFlags } : {}),
+  };
+  process.stdout.write(`${JSON.stringify(line)}\n`);
+}
+
+function hasOtelSemconvOptIn(value: string | undefined, optIn: string): boolean {
+  return (
+    value
+      ?.split(",")
+      .map((part) => part.trim())
+      .includes(optIn) ?? false
+  );
+}
+
+function emitLatestGenAiSemconv(): boolean {
+  return hasOtelSemconvOptIn(
+    process.env[OTEL_SEMCONV_STABILITY_OPT_IN_ENV],
+    GEN_AI_LATEST_EXPERIMENTAL_OPT_IN,
+  );
+}
+
+function genAiOperationName(
+  api: string | undefined,
+): "chat" | "generate_content" | "text_completion" {
+  const normalized = api?.trim().toLowerCase();
+  if (!normalized) {
+    return "chat";
+  }
+  if (normalized === "completions" || normalized.endsWith("-completions")) {
+    return "text_completion";
+  }
+  if (normalized === "generate_content" || normalized.includes("generative-ai")) {
+    return "generate_content";
+  }
+  return "chat";
+}
+
+function positiveFiniteNumber(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function assignPositiveNumberAttr(
+  attrs: Record<string, string | number | boolean>,
+  key: string,
+  value: number | undefined,
+): void {
+  const normalized = positiveFiniteNumber(value);
+  if (normalized !== undefined) {
+    attrs[key] = normalized;
+  }
+}
+
+function assignModelCallSizeTimingAttrs(
+  attrs: Record<string, string | number | boolean>,
+  evt: {
+    requestPayloadBytes?: number;
+    responseStreamBytes?: number;
+    timeToFirstByteMs?: number;
+  },
+): void {
+  assignPositiveNumberAttr(attrs, "mo.model_call.request_bytes", evt.requestPayloadBytes);
+  assignPositiveNumberAttr(attrs, "mo.model_call.response_bytes", evt.responseStreamBytes);
+  assignPositiveNumberAttr(
+    attrs,
+    "mo.model_call.time_to_first_byte_ms",
+    evt.timeToFirstByteMs,
+  );
+}
+
+function assignNumberAttr(
+  attrs: Record<string, string | number | boolean>,
+  key: string,
+  value: number | undefined,
+): void {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    attrs[key] = value;
+  }
+}
+
+function modelCallPromptTokens(usage: {
+  promptTokens?: number;
+  input?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}): number | undefined {
+  if (typeof usage.promptTokens === "number" && Number.isFinite(usage.promptTokens)) {
+    return usage.promptTokens;
+  }
+  const input = usage.input ?? 0;
+  const cacheRead = usage.cacheRead ?? 0;
+  const cacheWrite = usage.cacheWrite ?? 0;
+  const total = input + cacheRead + cacheWrite;
+  return total > 0 ? total : undefined;
+}
+
+function assignModelCallPromptStatsAttrs(
+  attrs: Record<string, string | number | boolean>,
+  evt: Pick<Extract<DiagnosticEventPayload, { type: "model.call.started" }>, "promptStats">,
+): void {
+  const stats = evt.promptStats;
+  if (!stats) {
+    return;
+  }
+  for (const [key, value] of [
+    ["mo.model_call.prompt.input_messages_count", stats.inputMessagesCount],
+    ["mo.model_call.prompt.input_messages_chars", stats.inputMessagesChars],
+    ["mo.model_call.prompt.system_prompt_chars", stats.systemPromptChars],
+    ["mo.model_call.prompt.tool_definitions_count", stats.toolDefinitionsCount],
+    ["mo.model_call.prompt.tool_definitions_chars", stats.toolDefinitionsChars],
+    ["mo.model_call.prompt.total_chars", stats.totalChars],
+  ] as const) {
+    assignNumberAttr(attrs, key, value);
+  }
+}
+
+function assignModelCallUsageAttrs(
+  attrs: Record<string, string | number | boolean>,
+  evt: Pick<ModelCallLifecycleDiagnosticEvent, "usage">,
+): void {
+  const usage = evt.usage;
+  if (!usage) {
+    return;
+  }
+  const promptTokens = modelCallPromptTokens(usage);
+  for (const [key, value] of [
+    ["mo.model_call.usage.input_tokens", usage.input],
+    ["mo.model_call.usage.output_tokens", usage.output],
+    ["mo.model_call.usage.cache_read_input_tokens", usage.cacheRead],
+    ["mo.model_call.usage.cache_creation_input_tokens", usage.cacheWrite],
+    ["mo.model_call.usage.reasoning_output_tokens", usage.reasoningTokens],
+    ["mo.model_call.usage.prompt_tokens", promptTokens],
+    ["mo.model_call.usage.total_tokens", usage.total],
+    ["gen_ai.usage.input_tokens", promptTokens],
+    ["gen_ai.usage.output_tokens", usage.output],
+    ["gen_ai.usage.cache_read.input_tokens", usage.cacheRead],
+    ["gen_ai.usage.cache_creation.input_tokens", usage.cacheWrite],
+  ] as const) {
+    assignPositiveNumberAttr(attrs, key, value);
+  }
+}
+
+function assignGenAiSpanIdentityAttrs(
+  attrs: Record<string, string | number | boolean>,
+  input: { api?: string; model?: string; provider?: string },
+): void {
+  if (emitLatestGenAiSemconv()) {
+    attrs["gen_ai.provider.name"] = lowCardinalityAttr(input.provider);
+  } else {
+    attrs["gen_ai.system"] = lowCardinalityAttr(input.provider);
+  }
+  if (input.model) {
+    // Span attributes carry the full model id; only metric labels need bounded cardinality
+    // (the gen_ai metrics below still use lowCardinalityAttr). The low-cardinality allowlist
+    // regex rejects "/", so provider-qualified ids like "anthropic/claude-sonnet-4.6" collapse
+    // to "unknown" on the SPAN — breaking model attribution in trace backends (e.g. Langfuse
+    // reads gen_ai.request.model). Keep the redacted raw model on the span.
+    attrs["gen_ai.request.model"] = redactSensitiveText(input.model.trim());
+  }
+  attrs["gen_ai.operation.name"] = genAiOperationName(input.api);
+}
+
+function assignGenAiModelCallAttrs(
+  attrs: Record<string, string | number | boolean>,
+  evt: { api?: string; model?: string; provider?: string },
+): void {
+  assignGenAiSpanIdentityAttrs(attrs, evt);
+}
+
+function modelCallSpanName(evt: { api?: string; model?: string }): string {
+  if (!emitLatestGenAiSemconv()) {
+    return "mo.model.call";
+  }
+  return `${genAiOperationName(evt.api)} ${lowCardinalityAttr(evt.model)}`;
+}
+
+function modelCallSpanKind(): SpanKind | undefined {
+  return emitLatestGenAiSemconv() ? SpanKind.CLIENT : undefined;
+}
+
+function addUpstreamRequestIdSpanEvent(
+  span: { addEvent?: (name: string, attributes?: Record<string, string>) => void },
+  upstreamRequestIdHash: string | undefined,
+): void {
+  if (!upstreamRequestIdHash) {
+    return;
+  }
+  const boundedHash = lowCardinalityAttr(upstreamRequestIdHash);
+  if (boundedHash === "unknown") {
+    return;
+  }
+  span.addEvent?.("mo.provider.request", {
+    "mo.upstreamRequestIdHash": boundedHash,
+  });
+}
+
+function clampOtelLogText(value: string, maxChars: number): string {
+  return value.length > maxChars ? `${value.slice(0, maxChars)}...(truncated)` : value;
+}
+
+function normalizeOtelLogString(value: string, maxChars: number): string {
+  return clampOtelLogText(redactSensitiveText(value), maxChars);
+}
+
+function resolveContentCapturePolicy(value: unknown): OtelContentCapturePolicy {
+  if (value === true) {
+    return {
+      inputMessages: true,
+      outputMessages: true,
+      toolInputs: true,
+      toolOutputs: true,
+      systemPrompt: false,
+      toolDefinitions: true,
+      logBodies: true,
+    };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return NO_CONTENT_CAPTURE;
+  }
+
+  const config = value as Record<string, unknown>;
+  if (config.enabled !== true) {
+    return NO_CONTENT_CAPTURE;
+  }
+  return {
+    inputMessages: config.inputMessages === true,
+    outputMessages: config.outputMessages === true,
+    toolInputs: config.toolInputs === true,
+    toolOutputs: config.toolOutputs === true,
+    systemPrompt: config.systemPrompt === true,
+    toolDefinitions: config.toolDefinitions === true,
+    logBodies: false,
+  };
+}
+
+function hasPreloadedOtelSdk(): boolean {
+  return process.env[PRELOADED_OTEL_SDK_ENV] === "1";
+}
+
+function normalizeOtelContentValue(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return normalizeOtelLogString(value, MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+  }
+  if (Array.isArray(value)) {
+    const items: string[] = [];
+    for (const item of value.slice(0, MAX_OTEL_CONTENT_ARRAY_ITEMS)) {
+      if (typeof item === "string") {
+        items.push(item);
+      }
+    }
+    if (items.length > 0) {
+      return normalizeOtelLogString(items.join("\n"), MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+    }
+  }
+  const json = safeJsonString(value, MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+  if (json) {
+    return json;
+  }
+  return undefined;
+}
+
+const TRUNCATED_JSON_TEXT_SUFFIX = "...(truncated)";
+const JSON_TRUNCATION_STRING_BUDGETS = [8192, 4096, 2048, 1024, 512, 256, 128, 64, 32] as const;
+const JSON_TRUNCATION_ARRAY_ITEM_BUDGETS = [
+  MAX_OTEL_CONTENT_ARRAY_ITEMS,
+  100,
+  50,
+  25,
+  10,
+  5,
+  1,
+] as const;
+const JSON_TRUNCATION_MAX_OBJECT_FIELDS = 64;
+const JSON_TRUNCATION_MAX_DEPTH = 8;
+
+type JsonTruncationOptions = {
+  maxArrayItems: number;
+  maxDepth: number;
+  maxObjectFields: number;
+  maxStringChars: number;
+  seen: WeakSet<object>;
+};
+
+function safeJsonString(value: unknown, maxChars: number): string | undefined {
+  if (value === undefined || typeof value === "function" || typeof value === "symbol") {
+    return undefined;
+  }
+  const exact = stringifyJsonForOtelAttribute(value);
+  if (exact && exact.length <= maxChars) {
+    return exact;
+  }
+  for (const maxArrayItems of JSON_TRUNCATION_ARRAY_ITEM_BUDGETS) {
+    for (const maxStringChars of JSON_TRUNCATION_STRING_BUDGETS) {
+      const candidate = truncateJsonValueForOtelAttribute(value, {
+        maxArrayItems,
+        maxDepth: JSON_TRUNCATION_MAX_DEPTH,
+        maxObjectFields: JSON_TRUNCATION_MAX_OBJECT_FIELDS,
+        maxStringChars,
+        seen: new WeakSet<object>(),
+      });
+      const json = stringifyJsonForOtelAttribute(candidate);
+      if (json && json.length <= maxChars) {
+        return json;
+      }
+    }
+  }
+  const summary = stringifyJsonForOtelAttribute({
+    truncated: true,
+    reason: exact ? "max_attribute_size" : "unserializable_value",
+    type: describeJsonValue(value),
+  });
+  return summary && summary.length <= maxChars ? summary : undefined;
+}
+
+function stringifyJsonForOtelAttribute(value: unknown): string | undefined {
+  try {
+    const json = JSON.stringify(value);
+    if (!json) {
+      return undefined;
+    }
+    return redactSensitiveText(json);
+  } catch {
+    return undefined;
+  }
+}
+
+function truncateJsonValueForOtelAttribute(
+  value: unknown,
+  options: JsonTruncationOptions,
+): unknown {
+  if (typeof value === "string") {
+    return truncateJsonTextForOtelAttribute(value, options.maxStringChars);
+  }
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return value;
+  }
+  if (typeof value === "bigint") {
+    return truncateJsonTextForOtelAttribute(String(value), options.maxStringChars);
+  }
+  if (value === undefined || typeof value === "function" || typeof value === "symbol") {
+    return undefined;
+  }
+  if (options.maxDepth <= 0) {
+    return { truncated: true, reason: "max_depth" };
+  }
+  if (Array.isArray(value)) {
+    return truncateJsonArrayForOtelAttribute(value, options);
+  }
+  if (typeof value === "object") {
+    return truncateJsonObjectForOtelAttribute(value as Record<string, unknown>, options);
+  }
+  return undefined;
+}
+
+function truncateJsonArrayForOtelAttribute(
+  value: readonly unknown[],
+  options: JsonTruncationOptions,
+): unknown[] {
+  if (options.seen.has(value)) {
+    return [{ truncated: true, reason: "circular_reference" }];
+  }
+  options.seen.add(value);
+  const nextOptions = { ...options, maxDepth: options.maxDepth - 1 };
+  const items = value
+    .slice(0, options.maxArrayItems)
+    .map((item) => truncateJsonValueForOtelAttribute(item, nextOptions));
+  if (value.length > items.length) {
+    items.push({ truncated: true, omittedItems: value.length - items.length });
+  }
+  options.seen.delete(value);
+  return items;
+}
+
+function truncateJsonObjectForOtelAttribute(
+  value: Record<string, unknown>,
+  options: JsonTruncationOptions,
+): Record<string, unknown> {
+  if (options.seen.has(value)) {
+    return { truncated: true, reason: "circular_reference" };
+  }
+  options.seen.add(value);
+  const nextOptions = { ...options, maxDepth: options.maxDepth - 1 };
+  const result: Record<string, unknown> = {};
+  const entries = Object.entries(value).filter(
+    ([, field]) => field !== undefined && typeof field !== "function" && typeof field !== "symbol",
+  );
+  for (const [key, field] of entries.slice(0, options.maxObjectFields)) {
+    result[key] = truncateJsonValueForOtelAttribute(field, nextOptions);
+  }
+  if (entries.length > options.maxObjectFields) {
+    result.truncated = true;
+    result.omittedFields = entries.length - options.maxObjectFields;
+  }
+  options.seen.delete(value);
+  return result;
+}
+
+function truncateJsonTextForOtelAttribute(value: string, maxChars: number): string {
+  const redacted = redactSensitiveText(value);
+  if (redacted.length <= maxChars) {
+    return redacted;
+  }
+  const suffixBudget = Math.min(TRUNCATED_JSON_TEXT_SUFFIX.length, maxChars);
+  const prefixBudget = Math.max(0, maxChars - suffixBudget);
+  return `${redacted.slice(0, prefixBudget)}${TRUNCATED_JSON_TEXT_SUFFIX.slice(
+    TRUNCATED_JSON_TEXT_SUFFIX.length - suffixBudget,
+  )}`;
+}
+
+function describeJsonValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  if (value === null) {
+    return "null";
+  }
+  return typeof value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function textPart(content: string): Record<string, unknown> {
+  return { type: "text", content };
+}
+
+function toolCallResponsePart(part: Record<string, unknown>): Record<string, unknown> {
+  return {
+    type: "tool_call_response",
+    ...(typeof part.id === "string" ? { id: part.id } : {}),
+    result: part.result ?? part.response ?? part.content ?? part.details ?? "",
+  };
+}
+
+function contentParts(value: unknown): Record<string, unknown>[] {
+  if (typeof value === "string") {
+    return value.length > 0 ? [textPart(value)] : [];
+  }
+  if (!Array.isArray(value)) {
+    if (value === undefined || value === null) {
+      return [];
+    }
+    if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+      return [textPart(String(value))];
+    }
+    const json = safeJsonString(value, MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+    return json ? [textPart(json)] : [];
+  }
+  const parts: Record<string, unknown>[] = [];
+  for (const part of value) {
+    if (typeof part === "string") {
+      if (part.length > 0) {
+        parts.push(textPart(part));
+      }
+      continue;
+    }
+    if (!isRecord(part)) {
+      continue;
+    }
+    if (part.type === "text" && typeof part.text === "string") {
+      parts.push(textPart(part.text));
+    } else if (part.type === "text" && typeof part.content === "string") {
+      parts.push(textPart(part.content));
+    } else if (part.type === "thinking" && typeof part.thinking === "string") {
+      parts.push({ type: "reasoning", content: part.thinking });
+    } else if (part.type === "toolCall" && typeof part.name === "string") {
+      parts.push({
+        type: "tool_call",
+        name: part.name,
+        ...(typeof part.id === "string" ? { id: part.id } : {}),
+        ...(part.arguments !== undefined ? { arguments: part.arguments } : {}),
+      });
+    } else if (part.type === "tool_call" && typeof part.name === "string") {
+      parts.push({
+        type: "tool_call",
+        name: part.name,
+        ...(typeof part.id === "string" ? { id: part.id } : {}),
+        ...(part.arguments !== undefined ? { arguments: part.arguments } : {}),
+      });
+    } else if (part.type === "tool_call_response") {
+      parts.push(toolCallResponsePart(part));
+    } else if (part.type === "image") {
+      const data = typeof part.data === "string" ? part.data : undefined;
+      parts.push({
+        type: "blob",
+        modality: "image",
+        ...(typeof part.mimeType === "string" ? { mime_type: part.mimeType } : {}),
+        ...(typeof part.mime_type === "string" ? { mime_type: part.mime_type } : {}),
+        ...(data ? { content: data } : {}),
+      });
+    }
+  }
+  return parts;
+}
+
+function normalizeGenAiMessage(
+  value: unknown,
+  fallbackRole = "user",
+): Record<string, unknown> | undefined {
+  if (typeof value === "string") {
+    return { role: fallbackRole, parts: [textPart(value)] };
+  }
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const rawRole = typeof value.role === "string" ? value.role : fallbackRole;
+  const role = rawRole === "toolResult" ? "tool" : rawRole;
+  let parts: Record<string, unknown>[];
+  if (role === "tool") {
+    const explicitParts = contentParts(value.parts);
+    parts =
+      explicitParts.length > 0
+        ? explicitParts
+        : [
+            toolCallResponsePart({
+              id: value.toolCallId,
+              result: value.content ?? value.details ?? "",
+            }),
+          ];
+  } else {
+    parts = contentParts(value.parts ?? value.content);
+  }
+  if (parts.length === 0) {
+    return undefined;
+  }
+  return {
+    role,
+    parts,
+    ...(typeof value.name === "string" ? { name: value.name } : {}),
+    ...(typeof value.finish_reason === "string" ? { finish_reason: value.finish_reason } : {}),
+    ...(typeof value.stopReason === "string" ? { finish_reason: value.stopReason } : {}),
+  };
+}
+
+function normalizeGenAiMessages(value: unknown, fallbackRole: "user" | "assistant") {
+  const source = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const messages: Record<string, unknown>[] = [];
+  for (const item of source.slice(0, MAX_OTEL_CONTENT_ARRAY_ITEMS)) {
+    const message = normalizeGenAiMessage(item, fallbackRole);
+    if (message) {
+      messages.push(message);
+    }
+  }
+  return messages;
+}
+
+function normalizeGenAiToolDefinition(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value) || typeof value.name !== "string" || value.name.trim().length === 0) {
+    return undefined;
+  }
+  return {
+    type: typeof value.type === "string" ? value.type : "function",
+    name: value.name,
+    ...(typeof value.description === "string" ? { description: value.description } : {}),
+    ...(value.parameters !== undefined ? { parameters: value.parameters } : {}),
+  };
+}
+
+function normalizeGenAiToolDefinitions(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const definitions: Record<string, unknown>[] = [];
+  for (const item of value.slice(0, MAX_OTEL_CONTENT_ARRAY_ITEMS)) {
+    const definition = normalizeGenAiToolDefinition(item);
+    if (definition) {
+      definitions.push(definition);
+    }
+  }
+  return definitions;
+}
+
+function assignJsonAttribute(
+  attributes: Record<string, string | number | boolean>,
+  key: string,
+  value: unknown,
+): void {
+  const json = safeJsonString(value, MAX_OTEL_CONTENT_ATTRIBUTE_CHARS);
+  if (json) {
+    attributes[key] = json;
+  }
+}
+
+function assignGenAiModelContentAttributes(
+  attributes: Record<string, string | number | boolean>,
+  content: OtelModelCallContent | undefined,
+  policy: OtelContentCapturePolicy,
+): void {
+  if (policy.systemPrompt && typeof content?.systemPrompt === "string") {
+    const systemInstructions = [textPart(content.systemPrompt)];
+    assignJsonAttribute(attributes, ATTR_GEN_AI_SYSTEM_INSTRUCTIONS, systemInstructions);
+  }
+  if (policy.inputMessages) {
+    const inputMessages = normalizeGenAiMessages(content?.inputMessages, "user");
+    if (inputMessages.length > 0) {
+      assignJsonAttribute(attributes, ATTR_GEN_AI_INPUT_MESSAGES, inputMessages);
+      assignJsonAttribute(attributes, "input.value", inputMessages);
+      attributes["input.mime_type"] = "application/json";
+    }
+  }
+  if (policy.toolDefinitions) {
+    const toolDefinitions = normalizeGenAiToolDefinitions(content?.toolDefinitions);
+    if (toolDefinitions.length > 0) {
+      assignJsonAttribute(attributes, ATTR_GEN_AI_TOOL_DEFINITIONS, toolDefinitions);
+    }
+  }
+  if (policy.outputMessages) {
+    const outputMessages = normalizeGenAiMessages(content?.outputMessages, "assistant");
+    if (outputMessages.length > 0) {
+      assignJsonAttribute(attributes, ATTR_GEN_AI_OUTPUT_MESSAGES, outputMessages);
+      assignJsonAttribute(attributes, "output.value", outputMessages);
+      attributes["output.mime_type"] = "application/json";
+    }
+  }
+}
+
+function assignOtelContentAttribute(
+  attributes: Record<string, string | number | boolean>,
+  key: string,
+  value: unknown,
+): void {
+  const normalized = normalizeOtelContentValue(value);
+  if (normalized) {
+    attributes[key] = normalized;
+  }
+}
+
+function assignOtelModelContentAttributes(
+  attributes: Record<string, string | number | boolean>,
+  content: OtelModelCallContent | undefined,
+  policy: OtelContentCapturePolicy,
+): void {
+  assignGenAiModelContentAttributes(attributes, content, policy);
+  if (policy.inputMessages) {
+    assignOtelContentAttribute(
+      attributes,
+      "mo.content.input_messages",
+      content?.inputMessages,
+    );
+  }
+  if (policy.toolDefinitions) {
+    assignOtelContentAttribute(
+      attributes,
+      "mo.content.tool_definitions",
+      content?.toolDefinitions,
+    );
+  }
+  if (policy.outputMessages) {
+    assignOtelContentAttribute(
+      attributes,
+      "mo.content.output_messages",
+      content?.outputMessages,
+    );
+  }
+  if (policy.systemPrompt) {
+    assignOtelContentAttribute(attributes, "mo.content.system_prompt", content?.systemPrompt);
+  }
+}
+
+function assignOtelToolContentAttributes(
+  attributes: Record<string, string | number | boolean>,
+  content: OtelToolCallContent | undefined,
+  policy: OtelContentCapturePolicy,
+): void {
+  if (policy.toolInputs) {
+    assignOtelContentAttribute(attributes, "mo.content.tool_input", content?.toolInput);
+  }
+  if (policy.toolOutputs) {
+    assignOtelContentAttribute(attributes, "mo.content.tool_output", content?.toolOutput);
+  }
+}
+
+function assignOtelLogAttribute(
+  attributes: Record<string, string | number | boolean>,
+  key: string,
+  value: string | number | boolean,
+): void {
+  if (Object.keys(attributes).length >= MAX_OTEL_LOG_ATTRIBUTE_COUNT) {
+    return;
+  }
+  if (BLOCKED_OTEL_LOG_ATTRIBUTE_KEYS.has(key)) {
+    return;
+  }
+  if (redactSensitiveText(key) !== key) {
+    return;
+  }
+  if (!OTEL_LOG_ATTRIBUTE_KEY_RE.test(key)) {
+    return;
+  }
+  if (typeof value === "string") {
+    attributes[key] = normalizeOtelLogString(value, MAX_OTEL_LOG_ATTRIBUTE_VALUE_CHARS);
+    return;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    attributes[key] = value;
+    return;
+  }
+  if (typeof value === "boolean") {
+    attributes[key] = value;
+  }
+}
+
+function normalizeTraceContext(value: unknown): DiagnosticTraceContext | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Partial<DiagnosticTraceContext>;
+  if (!isValidDiagnosticTraceId(candidate.traceId)) {
+    return undefined;
+  }
+  if (candidate.spanId !== undefined && !isValidDiagnosticSpanId(candidate.spanId)) {
+    return undefined;
+  }
+  if (candidate.parentSpanId !== undefined && !isValidDiagnosticSpanId(candidate.parentSpanId)) {
+    return undefined;
+  }
+  if (candidate.traceFlags !== undefined && !isValidDiagnosticTraceFlags(candidate.traceFlags)) {
+    return undefined;
+  }
+  return {
+    traceId: candidate.traceId,
+    ...(candidate.spanId ? { spanId: candidate.spanId } : {}),
+    ...(candidate.parentSpanId ? { parentSpanId: candidate.parentSpanId } : {}),
+    ...(candidate.traceFlags ? { traceFlags: candidate.traceFlags } : {}),
+  };
+}
+
+function assignOtelLogEventAttributes(
+  attributes: Record<string, string | number | boolean>,
+  eventAttributes: Record<string, string | number | boolean> | undefined,
+): void {
+  if (!eventAttributes) {
+    return;
+  }
+  for (const rawKey in eventAttributes) {
+    if (Object.keys(attributes).length >= MAX_OTEL_LOG_ATTRIBUTE_COUNT) {
+      break;
+    }
+    if (!Object.hasOwn(eventAttributes, rawKey)) {
+      continue;
+    }
+    const key = rawKey.trim();
+    if (BLOCKED_OTEL_LOG_ATTRIBUTE_KEYS.has(key)) {
+      continue;
+    }
+    if (redactSensitiveText(key) !== key) {
+      continue;
+    }
+    if (!OTEL_LOG_RAW_ATTRIBUTE_KEY_RE.test(key)) {
+      continue;
+    }
+    assignOtelLogAttribute(attributes, `mo.${key}`, eventAttributes[rawKey]);
+  }
+}
+
+function assignOtelSecurityEventAttributes(
+  attributes: Record<string, string | number | boolean>,
+  eventAttributes: Record<string, string | number | boolean> | undefined,
+): void {
+  if (!eventAttributes) {
+    return;
+  }
+  for (const rawKey in eventAttributes) {
+    if (Object.keys(attributes).length >= MAX_OTEL_LOG_ATTRIBUTE_COUNT) {
+      break;
+    }
+    if (!Object.hasOwn(eventAttributes, rawKey)) {
+      continue;
+    }
+    const key = rawKey.trim();
+    if (BLOCKED_OTEL_LOG_ATTRIBUTE_KEYS.has(key)) {
+      continue;
+    }
+    if (redactSensitiveText(key) !== key) {
+      continue;
+    }
+    if (!OTEL_LOG_RAW_ATTRIBUTE_KEY_RE.test(key)) {
+      continue;
+    }
+    const value = eventAttributes[rawKey];
+    assignOtelLogAttribute(
+      attributes,
+      `mo.security.attribute.${key}`,
+      typeof value === "string" ? lowCardinalityAttr(value) : value,
+    );
+  }
+}
+
+function securitySeverityText(
+  severity: Extract<DiagnosticEventPayload, { type: "security.event" }>["severity"],
+): SecuritySeverityText {
+  switch (severity) {
+    case "critical":
+      return "FATAL";
+    case "high":
+      return "ERROR";
+    case "medium":
+      return "WARN";
+    case "info":
+    case "low":
+      return "INFO";
+  }
+  const unreachable: never = severity;
+  return unreachable;
+}
+
+function assignOtelSecurityAttributes(
+  attributes: Record<string, string | number | boolean>,
+  evt: Extract<DiagnosticEventPayload, { type: "security.event" }>,
+): void {
+  assignOtelLogAttribute(attributes, "mo.security.event_id", evt.eventId);
+  assignOtelLogAttribute(attributes, "mo.security.category", evt.category);
+  assignOtelLogAttribute(attributes, "mo.security.action", lowCardinalityAttr(evt.action));
+  assignOtelLogAttribute(attributes, "mo.security.outcome", evt.outcome);
+  assignOtelLogAttribute(attributes, "mo.security.severity", evt.severity);
+  if (evt.reason) {
+    assignOtelLogAttribute(attributes, "mo.security.reason", lowCardinalityAttr(evt.reason));
+  }
+  if (evt.actor) {
+    assignOtelLogAttribute(attributes, "mo.security.actor.kind", evt.actor.kind);
+    if (evt.actor.idHash) {
+      assignOtelLogAttribute(
+        attributes,
+        "mo.security.actor.id_hash",
+        lowCardinalityAttr(evt.actor.idHash),
+      );
+    }
+    if (evt.actor.deviceIdHash) {
+      assignOtelLogAttribute(
+        attributes,
+        "mo.security.actor.device_id_hash",
+        lowCardinalityAttr(evt.actor.deviceIdHash),
+      );
+    }
+    if (evt.actor.channel) {
+      assignOtelLogAttribute(
+        attributes,
+        "mo.security.actor.channel",
+        lowCardinalityAttr(evt.actor.channel),
+      );
+    }
+    if (evt.actor.role) {
+      assignOtelLogAttribute(
+        attributes,
+        "mo.security.actor.role",
+        lowCardinalityAttr(evt.actor.role),
+      );
+    }
+    if (evt.actor.scopes?.length) {
+      assignOtelLogAttribute(
+        attributes,
+        "mo.security.actor.scopes",
+        evt.actor.scopes.map((scope) => lowCardinalityAttr(scope)).join(","),
+      );
+    }
+  }
+  if (evt.target) {
+    assignOtelLogAttribute(attributes, "mo.security.target.kind", evt.target.kind);
+    if (evt.target.idHash) {
+      assignOtelLogAttribute(
+        attributes,
+        "mo.security.target.id_hash",
+        lowCardinalityAttr(evt.target.idHash),
+      );
+    }
+    if (evt.target.name) {
+      assignOtelLogAttribute(
+        attributes,
+        "mo.security.target.name",
+        securityTargetNameAttr(evt.target.name),
+      );
+    }
+    if (evt.target.owner) {
+      assignOtelLogAttribute(
+        attributes,
+        "mo.security.target.owner",
+        lowCardinalityAttr(evt.target.owner),
+      );
+    }
+  }
+  if (evt.policy) {
+    if (evt.policy.id) {
+      assignOtelLogAttribute(
+        attributes,
+        "mo.security.policy.id",
+        lowCardinalityAttr(evt.policy.id),
+      );
+    }
+    if (evt.policy.decision) {
+      assignOtelLogAttribute(attributes, "mo.security.policy.decision", evt.policy.decision);
+    }
+    if (evt.policy.reason) {
+      assignOtelLogAttribute(
+        attributes,
+        "mo.security.policy.reason",
+        lowCardinalityAttr(evt.policy.reason),
+      );
+    }
+  }
+  if (evt.control) {
+    if (evt.control.id) {
+      assignOtelLogAttribute(
+        attributes,
+        "mo.security.control.id",
+        lowCardinalityAttr(evt.control.id),
+      );
+    }
+    if (evt.control.family) {
+      assignOtelLogAttribute(attributes, "mo.security.control.family", evt.control.family);
+    }
+  }
+  assignOtelSecurityEventAttributes(attributes, evt.attributes);
+}
+
+function traceFlagsToOtel(traceFlags: string | undefined): TraceFlags {
+  const parsed = Number.parseInt(traceFlags ?? "00", 16);
+  return (parsed & TraceFlags.SAMPLED) !== 0 ? TraceFlags.SAMPLED : TraceFlags.NONE;
+}
+
+function contextForTraceContext(traceContext: DiagnosticTraceContext | undefined) {
+  const normalized = normalizeTraceContext(traceContext);
+  if (!normalized?.spanId) {
+    return undefined;
+  }
+  return trace.setSpanContext(otelContextApi.active(), {
+    traceId: normalized.traceId,
+    spanId: normalized.spanId,
+    traceFlags: traceFlagsToOtel(normalized.traceFlags),
+    isRemote: true,
+  });
+}
+
+function contextForTrustedTraceContext(
+  evt: DiagnosticEventPayload,
+  metadata: DiagnosticEventMetadata,
+) {
+  return metadata.trusted || metadata.trustedTraceContext === true
+    ? contextForTraceContext(evt.trace)
+    : undefined;
+}
+
+function normalizedTrustedTraceContext(
+  evt: DiagnosticEventPayload,
+  metadata: DiagnosticEventMetadata,
+): DiagnosticTraceContext | undefined {
+  return metadata.trusted || metadata.trustedTraceContext === true
+    ? normalizeTraceContext(evt.trace)
+    : undefined;
+}
+
+function addTraceAttributes(
+  attributes: Record<string, string | number | boolean>,
+  traceContext: DiagnosticTraceContext | undefined,
+): void {
+  const normalized = normalizeTraceContext(traceContext);
+  if (!normalized) {
+    return;
+  }
+  attributes["mo.traceId"] = normalized.traceId;
+  if (normalized.spanId) {
+    attributes["mo.spanId"] = normalized.spanId;
+  }
+  if (normalized.parentSpanId) {
+    attributes["mo.parentSpanId"] = normalized.parentSpanId;
+  }
+  if (normalized.traceFlags) {
+    attributes["mo.traceFlags"] = normalized.traceFlags;
+  }
+}
+
+export function createDiagnosticsOtelService(): OpenClawPluginService {
+  let sdk: NodeSDK | null = null;
+  let logProvider: LoggerProvider | null = null;
+  let unsubscribe: (() => void) | null = null;
+  let stopActiveTrustedSpans: (() => void) | null = null;
+  let unregisterUnhandledRejectionHandler: (() => void) | null = null;
+
+  const stopStarted = async () => {
+    const currentUnsubscribe = unsubscribe;
+    const currentLogProvider = logProvider;
+    const currentSdk = sdk;
+    const currentStopActiveTrustedSpans = stopActiveTrustedSpans;
+    const currentUnregisterUnhandledRejectionHandler = unregisterUnhandledRejectionHandler;
+
+    unsubscribe = null;
+    logProvider = null;
+    sdk = null;
+    stopActiveTrustedSpans = null;
+    unregisterUnhandledRejectionHandler = null;
+
+    currentUnregisterUnhandledRejectionHandler?.();
+    currentUnsubscribe?.();
+    currentStopActiveTrustedSpans?.();
+    if (currentLogProvider) {
+      await currentLogProvider.shutdown().catch(() => undefined);
+    }
+    if (currentSdk) {
+      await currentSdk.shutdown().catch(() => undefined);
+    }
+  };
+
+  return {
+    id: "diagnostics-otel",
+    async start(ctx) {
+      await stopStarted();
+
+      const cfg = ctx.config.diagnostics;
+      const otel = cfg?.otel;
+      if (!cfg || cfg.enabled === false || !otel?.enabled) {
+        return;
+      }
+
+      const emitExporterEvent = (
+        event: Omit<TelemetryExporterDiagnosticEvent, "type" | "seq" | "ts">,
+      ) => {
+        try {
+          ctx.internalDiagnostics?.emit({
+            type: "telemetry.exporter",
+            ...event,
+          });
+        } catch {
+          // Exporter health must never affect the exporter lifecycle.
+        }
+      };
+      const emitForSignals = (
+        signals: TelemetryExporterDiagnosticEvent["signal"][],
+        event: Omit<TelemetryExporterDiagnosticEvent, "type" | "seq" | "ts" | "signal">,
+      ) => {
+        for (const signal of signals) {
+          emitExporterEvent({ signal, ...event });
+        }
+      };
+      const tracesEnabled = otel.traces !== false;
+      const metricsEnabled = otel.metrics !== false;
+      const logsEnabled = otel.logs === true;
+      const logsExporter: OtelLogsExporter = otel.logsExporter ?? "otlp";
+      const logsToOtlp = logsEnabled && (logsExporter === "otlp" || logsExporter === "both");
+      const logsToStdout = logsEnabled && (logsExporter === "stdout" || logsExporter === "both");
+      const otlpSignals: TelemetryExporterDiagnosticEvent["signal"][] = [
+        ...(tracesEnabled ? (["traces"] as const) : []),
+        ...(metricsEnabled ? (["metrics"] as const) : []),
+        ...(logsToOtlp ? (["logs"] as const) : []),
+      ];
+      const enabledSignals: TelemetryExporterDiagnosticEvent["signal"][] = [
+        ...(tracesEnabled ? (["traces"] as const) : []),
+        ...(metricsEnabled ? (["metrics"] as const) : []),
+        ...(logsEnabled ? (["logs"] as const) : []),
+      ];
+      if (enabledSignals.length === 0) {
+        return;
+      }
+
+      const protocol = otel.protocol ?? process.env.OTEL_EXPORTER_OTLP_PROTOCOL ?? "http/protobuf";
+      if (otlpSignals.length > 0 && protocol !== "http/protobuf") {
+        emitForSignals(otlpSignals, {
+          exporter: "diagnostics-otel",
+          status: "failure",
+          reason: "unsupported_protocol",
+        });
+        ctx.logger.warn(`diagnostics-otel: unsupported protocol ${protocol}`);
+        return;
+      }
+
+      const endpoint = normalizeEndpoint(
+        otel.endpoint ?? process.env[OTEL_EXPORTER_OTLP_ENDPOINT_ENV],
+      );
+      const headers = otel.headers ?? undefined;
+      const serviceName =
+        otel.serviceName?.trim() || process.env.OTEL_SERVICE_NAME || DEFAULT_SERVICE_NAME;
+      const sampleRate = resolveSampleRate(otel.sampleRate);
+      const contentCapturePolicy = resolveContentCapturePolicy(otel.captureContent);
+      const sdkPreloaded = hasPreloadedOtelSdk();
+
+      const resource = resourceFromAttributes({
+        [ATTR_SERVICE_NAME]: serviceName,
+      });
+
+      const logUrl = resolveSignalOtelUrl({
+        signalEndpoint: otel.logsEndpoint,
+        signalEnvEndpoint: process.env[OTEL_EXPORTER_OTLP_LOGS_ENDPOINT_ENV],
+        endpoint,
+        path: "v1/logs",
+      });
+      if (!sdkPreloaded && (tracesEnabled || metricsEnabled)) {
+        const traceUrl = resolveSignalOtelUrl({
+          signalEndpoint: otel.tracesEndpoint,
+          signalEnvEndpoint: process.env[OTEL_EXPORTER_OTLP_TRACES_ENDPOINT_ENV],
+          endpoint,
+          path: "v1/traces",
+        });
+        const metricUrl = resolveSignalOtelUrl({
+          signalEndpoint: otel.metricsEndpoint,
+          signalEnvEndpoint: process.env[OTEL_EXPORTER_OTLP_METRICS_ENDPOINT_ENV],
+          endpoint,
+          path: "v1/metrics",
+        });
+        const traceExporter = tracesEnabled
+          ? new OTLPTraceExporter({
+              ...(traceUrl ? { url: traceUrl } : {}),
+              ...(headers ? { headers } : {}),
+            })
+          : undefined;
+        const spanProcessors =
+          traceExporter && typeof otel.flushIntervalMs === "number"
+            ? [
+                new BatchSpanProcessor(traceExporter, {
+                  scheduledDelayMillis: Math.max(1000, otel.flushIntervalMs),
+                }),
+              ]
+            : undefined;
+
+        const metricExporter = metricsEnabled
+          ? new OTLPMetricExporter({
+              ...(metricUrl ? { url: metricUrl } : {}),
+              ...(headers ? { headers } : {}),
+            })
+          : undefined;
+
+        const metricReader = metricExporter
+          ? new PeriodicExportingMetricReader({
+              exporter: metricExporter,
+              ...(typeof otel.flushIntervalMs === "number"
+                ? { exportIntervalMillis: Math.max(1000, otel.flushIntervalMs) }
+                : {}),
+            })
+          : undefined;
+
+        sdk = new NodeSDK({
+          resource,
+          ...(spanProcessors ? { spanProcessors } : traceExporter ? { traceExporter } : {}),
+          ...(metricReader ? { metricReader } : {}),
+          ...(sampleRate !== undefined
+            ? {
+                sampler: new ParentBasedSampler({
+                  root: new TraceIdRatioBasedSampler(sampleRate),
+                }),
+              }
+            : {}),
+        });
+
+        try {
+          sdk.start();
+        } catch (err) {
+          emitForSignals(
+            [
+              ...(tracesEnabled ? (["traces"] as const) : []),
+              ...(metricsEnabled ? (["metrics"] as const) : []),
+            ],
+            {
+              exporter: "diagnostics-otel",
+              status: "failure",
+              reason: "start_failed",
+              errorCategory: errorCategory(err),
+            },
+          );
+          await stopStarted();
+          ctx.logger.error(`diagnostics-otel: failed to start SDK: ${formatError(err)}`);
+          throw err;
+        }
+      } else if (sdkPreloaded && (tracesEnabled || metricsEnabled)) {
+        ctx.logger.info("diagnostics-otel: using preloaded OpenTelemetry SDK");
+      }
+
+      const logSeverityMap: Record<string, SeverityNumber> = {
+        TRACE: 1 as SeverityNumber,
+        DEBUG: 5 as SeverityNumber,
+        INFO: 9 as SeverityNumber,
+        WARN: 13 as SeverityNumber,
+        ERROR: 17 as SeverityNumber,
+        FATAL: 21 as SeverityNumber,
+      };
+
+      const meter = metrics.getMeter("mo");
+      const tracer = trace.getTracer("mo");
+      const activeTrustedSpans = new Map<string, ReturnType<typeof tracer.startSpan>>();
+      const activeTrustedSpanAliases = new Map<
+        string,
+        { span: ReturnType<typeof tracer.startSpan>; spanId: string; owner: TrustedSpanAliasOwner }
+      >();
+      const retainedTrustedSpanContexts = new Map<
+        string,
+        { spanContext: SpanContext; token: symbol; owner?: TrustedSpanAliasOwner }
+      >();
+      const retainedTrustedSpanContextCleanupTimers = new Set<ReturnType<typeof setTimeout>>();
+      stopActiveTrustedSpans = () => {
+        const stopAt = Date.now();
+        for (const handle of retainedTrustedSpanContextCleanupTimers) {
+          clearTimeout(handle);
+        }
+        retainedTrustedSpanContextCleanupTimers.clear();
+        retainedTrustedSpanContexts.clear();
+        for (const span of new Set([
+          ...activeTrustedSpans.values(),
+          ...Array.from(activeTrustedSpanAliases.values(), (entry) => entry.span),
+        ])) {
+          span.end(stopAt);
+        }
+        activeTrustedSpans.clear();
+        activeTrustedSpanAliases.clear();
+      };
+
+      const tokensCounter = meter.createCounter("mo.tokens", {
+        unit: "1",
+        description: "Token usage by type",
+      });
+      const genAiTokenUsageHistogram = meter.createHistogram("gen_ai.client.token.usage", {
+        unit: "{token}",
+        description: "Number of input and output tokens used by GenAI client operations",
+        advice: {
+          explicitBucketBoundaries: GEN_AI_TOKEN_USAGE_BUCKETS,
+        },
+      });
+      const genAiOperationDurationHistogram = meter.createHistogram(
+        "gen_ai.client.operation.duration",
+        {
+          unit: "s",
+          description: "GenAI client operation duration",
+          advice: {
+            explicitBucketBoundaries: GEN_AI_OPERATION_DURATION_BUCKETS,
+          },
+        },
+      );
+      const costCounter = meter.createCounter("mo.cost.usd", {
+        unit: "1",
+        description: "Estimated model cost (USD)",
+      });
+      const durationHistogram = meter.createHistogram("mo.run.duration_ms", {
+        unit: "ms",
+        description: "Agent run duration",
+      });
+      const harnessDurationHistogram = meter.createHistogram("mo.harness.duration_ms", {
+        unit: "ms",
+        description: "Agent harness lifecycle duration",
+      });
+      const contextHistogram = meter.createHistogram("mo.context.tokens", {
+        unit: "1",
+        description: "Context window size and usage",
+      });
+      const webhookReceivedCounter = meter.createCounter("mo.webhook.received", {
+        unit: "1",
+        description: "Webhook requests received",
+      });
+      const webhookErrorCounter = meter.createCounter("mo.webhook.error", {
+        unit: "1",
+        description: "Webhook processing errors",
+      });
+      const webhookDurationHistogram = meter.createHistogram("mo.webhook.duration_ms", {
+        unit: "ms",
+        description: "Webhook processing duration",
+      });
+      const messageQueuedCounter = meter.createCounter("mo.message.queued", {
+        unit: "1",
+        description: "Messages queued for processing",
+      });
+      const messageReceivedCounter = meter.createCounter("mo.message.received", {
+        unit: "1",
+        description: "Inbound messages received",
+      });
+      const messageDispatchStartedCounter = meter.createCounter(
+        "mo.message.dispatch.started",
+        {
+          unit: "1",
+          description: "Inbound message dispatch attempts started",
+        },
+      );
+      const messageDispatchCompletedCounter = meter.createCounter(
+        "mo.message.dispatch.completed",
+        {
+          unit: "1",
+          description: "Inbound message dispatch attempts completed",
+        },
+      );
+      const messageDispatchDurationHistogram = meter.createHistogram(
+        "mo.message.dispatch.duration_ms",
+        {
+          unit: "ms",
+          description: "Inbound message dispatch duration",
+        },
+      );
+      const messageProcessedCounter = meter.createCounter("mo.message.processed", {
+        unit: "1",
+        description: "Messages processed by outcome",
+      });
+      const messageDurationHistogram = meter.createHistogram("mo.message.duration_ms", {
+        unit: "ms",
+        description: "Message processing duration",
+      });
+      const messageDeliveryStartedCounter = meter.createCounter(
+        "mo.message.delivery.started",
+        {
+          unit: "1",
+          description: "Outbound message delivery attempts started",
+        },
+      );
+      const messageDeliveryDurationHistogram = meter.createHistogram(
+        "mo.message.delivery.duration_ms",
+        {
+          unit: "ms",
+          description: "Outbound message delivery duration",
+        },
+      );
+      const queueDepthHistogram = meter.createHistogram("mo.queue.depth", {
+        unit: "1",
+        description: "Queue depth on enqueue/dequeue",
+      });
+      const queueWaitHistogram = meter.createHistogram("mo.queue.wait_ms", {
+        unit: "ms",
+        description: "Queue wait time before execution",
+      });
+      const laneEnqueueCounter = meter.createCounter("mo.queue.lane.enqueue", {
+        unit: "1",
+        description: "Command queue lane enqueue events",
+      });
+      const laneDequeueCounter = meter.createCounter("mo.queue.lane.dequeue", {
+        unit: "1",
+        description: "Command queue lane dequeue events",
+      });
+      const sessionStateCounter = meter.createCounter("mo.session.state", {
+        unit: "1",
+        description: "Session state transitions",
+      });
+      const sessionTurnCreatedCounter = meter.createCounter("mo.session.turn.created", {
+        unit: "1",
+        description: "Agent session turns created",
+      });
+      const sessionStuckCounter = meter.createCounter("mo.session.stuck", {
+        unit: "1",
+        description: "Sessions stuck in processing",
+      });
+      const sessionStuckAgeHistogram = meter.createHistogram("mo.session.stuck_age_ms", {
+        unit: "ms",
+        description: "Age of stuck sessions",
+      });
+      const sessionRecoveryRequestedCounter = meter.createCounter(
+        "mo.session.recovery.requested",
+        {
+          unit: "1",
+          description: "Session recovery attempts requested",
+        },
+      );
+      const sessionRecoveryCompletedCounter = meter.createCounter(
+        "mo.session.recovery.completed",
+        {
+          unit: "1",
+          description: "Session recovery attempts completed",
+        },
+      );
+      const sessionRecoveryAgeHistogram = meter.createHistogram(
+        "mo.session.recovery.age_ms",
+        {
+          unit: "ms",
+          description: "Age of sessions selected for recovery",
+        },
+      );
+      const talkEventCounter = meter.createCounter("mo.talk.event", {
+        unit: "1",
+        description: "Talk events emitted by type",
+      });
+      const talkEventDurationHistogram = meter.createHistogram("mo.talk.event.duration_ms", {
+        unit: "ms",
+        description: "Talk event duration when reported",
+      });
+      const talkAudioBytesHistogram = meter.createHistogram("mo.talk.audio.bytes", {
+        unit: "By",
+        description: "Talk audio frame byte lengths",
+      });
+      const runAttemptCounter = meter.createCounter("mo.run.attempt", {
+        unit: "1",
+        description: "Run attempts",
+      });
+      const toolLoopCounter = meter.createCounter("mo.tool.loop", {
+        unit: "1",
+        description: "Detected repetitive tool-call loop events",
+      });
+      const skillUsedCounter = meter.createCounter("mo.skill.used", {
+        unit: "1",
+        description: "Skills used by agent runs",
+      });
+      const modelCallDurationHistogram = meter.createHistogram("mo.model_call.duration_ms", {
+        unit: "ms",
+        description: "Model call duration",
+      });
+      const modelCallRequestBytesHistogram = meter.createHistogram(
+        "mo.model_call.request_bytes",
+        {
+          unit: "By",
+          description: "UTF-8 byte size of sanitized model request payloads",
+        },
+      );
+      const modelCallResponseBytesHistogram = meter.createHistogram(
+        "mo.model_call.response_bytes",
+        {
+          unit: "By",
+          description: "UTF-8 byte size of bounded streamed model response payloads",
+        },
+      );
+      const modelCallTimeToFirstByteHistogram = meter.createHistogram(
+        "mo.model_call.time_to_first_byte_ms",
+        {
+          unit: "ms",
+          description: "Elapsed time before the first streamed model response event",
+        },
+      );
+      const modelFailoverCounter = meter.createCounter("mo.model.failover", {
+        unit: "1",
+        description: "Model failovers by source, destination, lane, and reason",
+      });
+      const toolExecutionDurationHistogram = meter.createHistogram(
+        "mo.tool.execution.duration_ms",
+        {
+          unit: "ms",
+          description: "Tool execution duration",
+        },
+      );
+      const toolExecutionBlockedCounter = meter.createCounter("mo.tool.execution.blocked", {
+        unit: "1",
+        description: "Tool executions blocked by policy or sandbox diagnostics",
+      });
+      const execProcessDurationHistogram = meter.createHistogram("mo.exec.duration_ms", {
+        unit: "ms",
+        description: "Exec process duration",
+      });
+      const memoryRssHistogram = meter.createHistogram("mo.memory.rss_bytes", {
+        unit: "By",
+        description: "Resident set size reported by diagnostic memory samples",
+      });
+      const memoryHeapUsedHistogram = meter.createHistogram("mo.memory.heap_used_bytes", {
+        unit: "By",
+        description: "Heap used bytes reported by diagnostic memory samples",
+      });
+      const memoryHeapTotalHistogram = meter.createHistogram("mo.memory.heap_total_bytes", {
+        unit: "By",
+        description: "Heap total bytes reported by diagnostic memory samples",
+      });
+      const memoryExternalHistogram = meter.createHistogram("mo.memory.external_bytes", {
+        unit: "By",
+        description: "External memory bytes reported by diagnostic memory samples",
+      });
+      const memoryArrayBuffersHistogram = meter.createHistogram(
+        "mo.memory.array_buffers_bytes",
+        {
+          unit: "By",
+          description: "ArrayBuffer bytes reported by diagnostic memory samples",
+        },
+      );
+      const memoryPressureCounter = meter.createCounter("mo.memory.pressure", {
+        unit: "1",
+        description: "Diagnostic memory pressure events",
+      });
+      const asyncQueueDroppedCounter = meter.createCounter(
+        "mo.diagnostic.async_queue.dropped",
+        {
+          unit: "1",
+          description: "Async diagnostic queue drops by dropped event class",
+        },
+      );
+      const payloadLargeCounter = meter.createCounter("mo.payload.large", {
+        unit: "1",
+        description: "Oversized payload diagnostics by surface and action",
+      });
+      const payloadLargeBytesHistogram = meter.createHistogram("mo.payload.large_bytes", {
+        unit: "By",
+        description: "Oversized payload byte sizes by surface and action",
+      });
+      const livenessWarningCounter = meter.createCounter("mo.liveness.warning", {
+        unit: "1",
+        description: "Diagnostic liveness warning events",
+      });
+      const livenessEventLoopDelayP99Histogram = meter.createHistogram(
+        "mo.liveness.event_loop_delay_p99_ms",
+        {
+          unit: "ms",
+          description: "P99 event-loop delay reported by diagnostic liveness warnings",
+        },
+      );
+      const livenessEventLoopDelayMaxHistogram = meter.createHistogram(
+        "mo.liveness.event_loop_delay_max_ms",
+        {
+          unit: "ms",
+          description: "Maximum event-loop delay reported by diagnostic liveness warnings",
+        },
+      );
+      const livenessEventLoopUtilizationHistogram = meter.createHistogram(
+        "mo.liveness.event_loop_utilization",
+        {
+          unit: "1",
+          description: "Event-loop utilization reported by diagnostic liveness warnings",
+        },
+      );
+      const livenessCpuCoreRatioHistogram = meter.createHistogram(
+        "mo.liveness.cpu_core_ratio",
+        {
+          unit: "1",
+          description: "CPU core ratio reported by diagnostic liveness warnings",
+        },
+      );
+      const telemetryExporterCounter = meter.createCounter("mo.telemetry.exporter.events", {
+        unit: "1",
+        description: "Diagnostic telemetry exporter lifecycle and failure events",
+      });
+
+      let recordLogRecord:
+        | ((
+            evt: Extract<DiagnosticEventPayload, { type: "log.record" }>,
+            metadata: DiagnosticEventMetadata,
+          ) => void)
+        | undefined;
+      let recordSecurityEvent:
+        | ((
+            evt: Extract<DiagnosticEventPayload, { type: "security.event" }>,
+            metadata: DiagnosticEventMetadata,
+          ) => void)
+        | undefined;
+      if (logsEnabled) {
+        let logRecordExportFailureLastReportedAt = Number.NEGATIVE_INFINITY;
+
+        let otelLogger: { emit: (logRecord: LogRecord) => void } | undefined;
+        if (logsToOtlp) {
+          const logExporter = new OTLPLogExporter({
+            ...(logUrl ? { url: logUrl } : {}),
+            ...(headers ? { headers } : {}),
+          });
+          const logProcessor = new BatchLogRecordProcessor(
+            logExporter,
+            typeof otel.flushIntervalMs === "number"
+              ? { scheduledDelayMillis: Math.max(1000, otel.flushIntervalMs) }
+              : {},
+          );
+          logProvider = new LoggerProvider({
+            resource,
+            processors: [logProcessor],
+          });
+          otelLogger = logProvider.getLogger("mo");
+        }
+
+        const reportLogExportFailure = (err: unknown, label: "log record" | "security event") => {
+          emitExporterEvent({
+            exporter: "diagnostics-otel",
+            signal: "logs",
+            status: "failure",
+            reason: "emit_failed",
+            errorCategory: errorCategory(err),
+          });
+          const now = Date.now();
+          if (
+            now - logRecordExportFailureLastReportedAt >=
+            LOG_RECORD_EXPORT_FAILURE_REPORT_INTERVAL_MS
+          ) {
+            logRecordExportFailureLastReportedAt = now;
+            ctx.logger.error(`diagnostics-otel: ${label} export failed: ${formatError(err)}`);
+          }
+        };
+
+        const emitLogRecord = ({ logRecord, traceContext }: BuiltOtelLogRecord) => {
+          if (logsToOtlp) {
+            otelLogger?.emit(logRecord);
+          }
+          if (logsToStdout) {
+            writeStdoutDiagnosticLogRecord({
+              logRecord,
+              serviceName,
+              ...(traceContext ? { traceContext } : {}),
+            });
+          }
+        };
+
+        const buildDiagnosticLogRecord = (
+          evt: Extract<DiagnosticEventPayload, { type: "log.record" }>,
+          metadata: DiagnosticEventMetadata,
+        ): BuiltOtelLogRecord => {
+          const logLevelName = evt.level || "INFO";
+          const severityNumber = logSeverityMap[logLevelName] ?? (9 as SeverityNumber);
+          const body = shouldCaptureOtelLogBody(contentCapturePolicy)
+            ? normalizeOtelLogString(evt.message || "log", MAX_OTEL_LOG_BODY_CHARS)
+            : "log";
+          const attributes = Object.create(null) as Record<string, string | number | boolean>;
+          assignOtelLogAttribute(attributes, "mo.log.level", logLevelName);
+          if (evt.loggerName) {
+            assignOtelLogAttribute(attributes, "mo.logger", evt.loggerName);
+          }
+          if (evt.loggerParents?.length) {
+            assignOtelLogAttribute(
+              attributes,
+              "mo.logger.parents",
+              evt.loggerParents.join("."),
+            );
+          }
+          assignOtelLogEventAttributes(attributes, evt.attributes);
+          if (evt.code?.line) {
+            assignOtelLogAttribute(attributes, "code.lineno", evt.code.line);
+          }
+          if (evt.code?.functionName) {
+            assignOtelLogAttribute(attributes, "code.function", evt.code.functionName);
+          }
+          const traceContext = normalizedTrustedTraceContext(evt, metadata);
+          addTraceAttributes(attributes, traceContext);
+
+          const logRecord: LogRecord = {
+            body,
+            severityText: logLevelName,
+            severityNumber,
+            attributes: redactOtelAttributes(attributes),
+            timestamp: evt.ts,
+          };
+          const logContext = contextForTrustedTraceContext(evt, metadata);
+          if (logContext) {
+            logRecord.context = logContext;
+          }
+          return { logRecord, ...(traceContext ? { traceContext } : {}) };
+        };
+
+        const buildSecurityLogRecord = (
+          evt: Extract<DiagnosticEventPayload, { type: "security.event" }>,
+          metadata: DiagnosticEventMetadata,
+        ): BuiltOtelLogRecord => {
+          const severityText = securitySeverityText(evt.severity);
+          const attributes = Object.create(null) as Record<string, string | number | boolean>;
+          assignOtelSecurityAttributes(attributes, evt);
+
+          const traceContext = normalizedTrustedTraceContext(evt, metadata);
+          const logRecord: LogRecord = {
+            body: "mo.security.event",
+            severityText,
+            severityNumber: logSeverityMap[severityText] ?? (9 as SeverityNumber),
+            attributes: redactOtelAttributes(attributes),
+            timestamp: evt.ts,
+          };
+          const logContext = contextForTrustedTraceContext(evt, metadata);
+          if (logContext) {
+            logRecord.context = logContext;
+          }
+          return { logRecord, ...(traceContext ? { traceContext } : {}) };
+        };
+
+        recordLogRecord = (evt, metadata) => {
+          try {
+            emitLogRecord(buildDiagnosticLogRecord(evt, metadata));
+          } catch (err) {
+            reportLogExportFailure(err, "log record");
+          }
+        };
+        recordSecurityEvent = (evt, metadata) => {
+          if (!metadata.trusted) {
+            return;
+          }
+          try {
+            emitLogRecord(buildSecurityLogRecord(evt, metadata));
+          } catch (err) {
+            reportLogExportFailure(err, "security event");
+          }
+        };
+      }
+
+      const spanWithDuration = (
+        name: string,
+        attributes: Record<string, string | number | boolean>,
+        durationMs?: number,
+        options: {
+          parentContext?: ReturnType<typeof contextForTraceContext> | null;
+          endTimeMs?: number;
+          kind?: SpanKind;
+          startTimeMs?: number;
+        } = {},
+      ) => {
+        const endTimeMs = options.endTimeMs ?? Date.now();
+        const startTime =
+          typeof options.startTimeMs === "number"
+            ? options.startTimeMs
+            : typeof durationMs === "number" && durationMs >= 0
+              ? endTimeMs - durationMs
+              : undefined;
+        const parentContext =
+          "parentContext" in options ? (options.parentContext ?? undefined) : undefined;
+        const span = tracer.startSpan(
+          name,
+          {
+            attributes: redactOtelAttributes(attributes),
+            ...(options.kind !== undefined ? { kind: options.kind } : {}),
+            ...(startTime !== undefined ? { startTime } : {}),
+          },
+          parentContext,
+        );
+        return span;
+      };
+      const trustedTraceContext = (
+        evt: DiagnosticEventPayload,
+        metadata: DiagnosticEventMetadata,
+      ) => (metadata.trusted ? normalizeTraceContext(evt.trace) : undefined);
+      const internalOrTrustedTraceContext = (
+        evt: DiagnosticEventPayload,
+        metadata: DiagnosticEventMetadata,
+      ) => (metadata.trusted || metadata.internal ? normalizeTraceContext(evt.trace) : undefined);
+      const trustedSpanAliasOwner = (
+        evt: DiagnosticEventPayload,
+      ): TrustedSpanAliasOwner | undefined => {
+        if ("runId" in evt && evt.runId) {
+          return { kind: "run", id: evt.runId };
+        }
+        return undefined;
+      };
+      const sameTrustedSpanAliasOwner = (
+        left: TrustedSpanAliasOwner | undefined,
+        right: TrustedSpanAliasOwner | undefined,
+      ) => Boolean(left && right && left.kind === right.kind && left.id === right.id);
+      const trustedSpanAliasKey = (spanId: string, owner: TrustedSpanAliasOwner) =>
+        `${spanId}:${owner.kind}:${owner.id}`;
+      const retainedTrustedSpanContextKey = (
+        traceId: string,
+        spanId: string,
+        owner?: TrustedSpanAliasOwner,
+      ) => `${traceId}:${owner ? trustedSpanAliasKey(spanId, owner) : spanId}`;
+      const retainedTrustedSpanContext = (
+        traceContext: DiagnosticTraceContext | undefined,
+        spanId: string | undefined,
+        owner?: TrustedSpanAliasOwner,
+      ) => {
+        if (!traceContext?.traceId || !spanId) {
+          return undefined;
+        }
+        const retained =
+          (owner
+            ? retainedTrustedSpanContexts.get(
+                retainedTrustedSpanContextKey(traceContext.traceId, spanId, owner),
+              )
+            : undefined) ??
+          retainedTrustedSpanContexts.get(
+            retainedTrustedSpanContextKey(traceContext.traceId, spanId),
+          );
+        if (retained?.spanContext.traceId !== traceContext.traceId) {
+          return undefined;
+        }
+        if (retained.owner && !sameTrustedSpanAliasOwner(retained.owner, owner)) {
+          return undefined;
+        }
+        return retained.spanContext;
+      };
+      const activeTrustedSpanAlias = (spanId: string, owner: TrustedSpanAliasOwner | undefined) => {
+        if (!owner) {
+          return undefined;
+        }
+        const alias = activeTrustedSpanAliases.get(trustedSpanAliasKey(spanId, owner));
+        if (!alias || !sameTrustedSpanAliasOwner(alias.owner, owner)) {
+          return undefined;
+        }
+        return alias.span;
+      };
+      const internalOrTrustedParentContext = (
+        evt: DiagnosticEventPayload,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const traceContext = internalOrTrustedTraceContext(evt, metadata);
+        const parentSpanId = traceContext?.parentSpanId ?? traceContext?.spanId;
+        if (!traceContext || !parentSpanId) {
+          return undefined;
+        }
+        return contextForTraceContext({
+          ...traceContext,
+          spanId: parentSpanId,
+        });
+      };
+      const internalOrTrustedExplicitParentContext = (
+        evt: DiagnosticEventPayload,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const traceContext = internalOrTrustedTraceContext(evt, metadata);
+        if (!traceContext?.parentSpanId) {
+          return undefined;
+        }
+        return contextForTraceContext({
+          ...traceContext,
+          spanId: traceContext.parentSpanId,
+        });
+      };
+      const activeTrustedParentContext = (
+        evt: DiagnosticEventPayload,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const traceContext = trustedTraceContext(evt, metadata);
+        const parentSpanId = traceContext?.parentSpanId;
+        if (!parentSpanId) {
+          return undefined;
+        }
+        const owner = trustedSpanAliasOwner(evt);
+        const activeParentSpan =
+          activeTrustedSpans.get(parentSpanId) ?? activeTrustedSpanAlias(parentSpanId, owner);
+        const spanContext =
+          activeParentSpan?.spanContext() ??
+          retainedTrustedSpanContext(traceContext, parentSpanId, owner);
+        if (!spanContext) {
+          return undefined;
+        }
+        return trace.setSpanContext(otelContextApi.active(), spanContext);
+      };
+      const activeInternalOrTrustedContext = (
+        evt: DiagnosticEventPayload,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const traceContext = internalOrTrustedTraceContext(evt, metadata);
+        if (!traceContext) {
+          return undefined;
+        }
+        const owner = trustedSpanAliasOwner(evt);
+        const activeSpan =
+          (traceContext.spanId
+            ? (activeTrustedSpans.get(traceContext.spanId) ??
+              activeTrustedSpanAlias(traceContext.spanId, owner))
+            : undefined) ??
+          (traceContext.parentSpanId
+            ? (activeTrustedSpans.get(traceContext.parentSpanId) ??
+              activeTrustedSpanAlias(traceContext.parentSpanId, owner))
+            : undefined);
+        if (activeSpan) {
+          return trace.setSpanContext(otelContextApi.active(), activeSpan.spanContext());
+        }
+        const retainedSpanContext =
+          retainedTrustedSpanContext(traceContext, traceContext.spanId, owner) ??
+          retainedTrustedSpanContext(traceContext, traceContext.parentSpanId, owner);
+        if (retainedSpanContext) {
+          return trace.setSpanContext(otelContextApi.active(), retainedSpanContext);
+        }
+        return internalOrTrustedParentContext(evt, metadata);
+      };
+      const trackTrustedSpan = (
+        evt: DiagnosticEventPayload,
+        metadata: DiagnosticEventMetadata,
+        span: ReturnType<typeof tracer.startSpan>,
+      ) => {
+        const spanId = trustedTraceContext(evt, metadata)?.spanId;
+        if (spanId) {
+          activeTrustedSpans.set(spanId, span);
+        }
+        return span;
+      };
+      const trackInternalOrTrustedSpan = (
+        evt: DiagnosticEventPayload,
+        metadata: DiagnosticEventMetadata,
+        span: ReturnType<typeof tracer.startSpan>,
+      ) => {
+        const spanId = internalOrTrustedTraceContext(evt, metadata)?.spanId;
+        if (spanId) {
+          activeTrustedSpans.set(spanId, span);
+        }
+        return span;
+      };
+      const takeTrackedTrustedSpan = (
+        evt: DiagnosticEventPayload,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const spanId = trustedTraceContext(evt, metadata)?.spanId;
+        if (!spanId) {
+          return undefined;
+        }
+        const span = activeTrustedSpans.get(spanId);
+        if (span) {
+          activeTrustedSpans.delete(spanId);
+        }
+        return span;
+      };
+      const getTrackedInternalOrTrustedSpan = (
+        evt: DiagnosticEventPayload,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const spanId = internalOrTrustedTraceContext(evt, metadata)?.spanId;
+        if (!spanId) {
+          return undefined;
+        }
+        return activeTrustedSpans.get(spanId);
+      };
+      const setSpanAttrs = (
+        span: ReturnType<typeof tracer.startSpan>,
+        attributes: Record<string, string | number | boolean>,
+      ) => {
+        span.setAttributes?.(redactOtelAttributes(attributes));
+      };
+      const retainTrustedSpanContext = (
+        traceId: string,
+        spanId: string,
+        spanContext: SpanContext,
+        token: symbol,
+        owner?: TrustedSpanAliasOwner,
+      ) => {
+        retainedTrustedSpanContexts.set(retainedTrustedSpanContextKey(traceId, spanId, owner), {
+          spanContext,
+          token,
+          ...(owner ? { owner } : {}),
+        });
+        while (retainedTrustedSpanContexts.size > MAX_RETAINED_TRUSTED_SPAN_CONTEXTS) {
+          const oldestKey = retainedTrustedSpanContexts.keys().next().value;
+          if (!oldestKey) {
+            break;
+          }
+          retainedTrustedSpanContexts.delete(oldestKey);
+        }
+      };
+      const scheduleRetainedTrustedSpanContextCleanup = (token: symbol) => {
+        let drainHandle: ReturnType<typeof setTimeout> | undefined;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const cleanup = () => {
+          if (drainHandle) {
+            clearTimeout(drainHandle);
+            retainedTrustedSpanContextCleanupTimers.delete(drainHandle);
+            drainHandle = undefined;
+          }
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            retainedTrustedSpanContextCleanupTimers.delete(timeoutHandle);
+            timeoutHandle = undefined;
+          }
+          for (const [key, retained] of retainedTrustedSpanContexts) {
+            if (retained.token === token) {
+              retainedTrustedSpanContexts.delete(key);
+            }
+          }
+        };
+        drainHandle = setTimeout(() => {
+          if (drainHandle) {
+            retainedTrustedSpanContextCleanupTimers.delete(drainHandle);
+            drainHandle = undefined;
+          }
+          void waitForDiagnosticEventsDrained().then(cleanup, cleanup);
+        }, 0);
+        (drainHandle as { unref?: () => void }).unref?.();
+        retainedTrustedSpanContextCleanupTimers.add(drainHandle);
+        timeoutHandle = setTimeout(cleanup, RETAINED_TRUSTED_SPAN_CONTEXT_TIMEOUT_MS);
+        (timeoutHandle as { unref?: () => void }).unref?.();
+        retainedTrustedSpanContextCleanupTimers.add(timeoutHandle);
+      };
+      const completeTrackedLifecycleSpan = (
+        spanId: string,
+        span: ReturnType<typeof tracer.startSpan>,
+        endTimeMs: number,
+      ) => {
+        const spanContext = span.spanContext();
+        const retainedKeys: Array<{ spanId: string; owner?: TrustedSpanAliasOwner }> = [{ spanId }];
+        const retainedAliasKeys: string[] = [];
+        for (const [aliasKey, alias] of activeTrustedSpanAliases) {
+          if (alias.span === span) {
+            retainedKeys.push({ spanId: alias.spanId, owner: alias.owner });
+            retainedAliasKeys.push(aliasKey);
+          }
+        }
+        if (activeTrustedSpans.get(spanId) === span) {
+          activeTrustedSpans.delete(spanId);
+        }
+        for (const aliasKey of retainedAliasKeys) {
+          if (activeTrustedSpanAliases.get(aliasKey)?.span === span) {
+            activeTrustedSpanAliases.delete(aliasKey);
+          }
+        }
+        span.end(endTimeMs);
+        const token = Symbol("retainedTrustedSpanContext");
+        for (const retainedKey of retainedKeys) {
+          retainTrustedSpanContext(
+            spanContext.traceId,
+            retainedKey.spanId,
+            spanContext,
+            token,
+            retainedKey.owner,
+          );
+        }
+        scheduleRetainedTrustedSpanContextCleanup(token);
+      };
+
+      const addRunAttrs = (
+        spanAttrs: Record<string, string | number | boolean>,
+        evt: {
+          runId?: string;
+          sessionKey?: string;
+          sessionId?: string;
+          provider?: string;
+          model?: string;
+          channel?: string;
+          trigger?: string;
+        },
+      ) => {
+        if (evt.provider) {
+          spanAttrs["mo.provider"] = evt.provider;
+        }
+        if (evt.model) {
+          spanAttrs["mo.model"] = evt.model;
+        }
+        if (evt.channel) {
+          spanAttrs["mo.channel"] = evt.channel;
+        }
+        if (evt.trigger) {
+          spanAttrs["mo.trigger"] = evt.trigger;
+        }
+      };
+
+      const paramsSummaryAttrs = (
+        summary: Extract<
+          DiagnosticEventPayload,
+          { type: "tool.execution.started" }
+        >["paramsSummary"],
+      ): Record<string, string | number> => {
+        if (!summary) {
+          return {};
+        }
+        return {
+          "mo.tool.params.kind": summary.kind,
+          ...("length" in summary ? { "mo.tool.params.length": summary.length } : {}),
+        };
+      };
+
+      const recordModelUsage = (
+        evt: Extract<DiagnosticEventPayload, { type: "model.usage" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const attrs = {
+          "mo.channel": evt.channel ?? "unknown",
+          "mo.agent": lowCardinalityAttr(evt.agentId),
+          "mo.provider": evt.provider ?? "unknown",
+          "mo.model": evt.model ?? "unknown",
+        };
+        const genAiAttrs: Record<string, string> = {
+          "gen_ai.operation.name": "chat",
+          "gen_ai.provider.name": lowCardinalityAttr(evt.provider),
+          "gen_ai.request.model": lowCardinalityAttr(evt.model),
+        };
+
+        const usage = evt.usage;
+        if (usage.input) {
+          tokensCounter.add(usage.input, { ...attrs, "mo.token": "input" });
+          genAiTokenUsageHistogram.record(usage.input, {
+            ...genAiAttrs,
+            "gen_ai.token.type": "input",
+          });
+        }
+        if (usage.output) {
+          tokensCounter.add(usage.output, { ...attrs, "mo.token": "output" });
+          genAiTokenUsageHistogram.record(usage.output, {
+            ...genAiAttrs,
+            "gen_ai.token.type": "output",
+          });
+        }
+        if (usage.cacheRead) {
+          tokensCounter.add(usage.cacheRead, { ...attrs, "mo.token": "cache_read" });
+        }
+        if (usage.cacheWrite) {
+          tokensCounter.add(usage.cacheWrite, { ...attrs, "mo.token": "cache_write" });
+        }
+        if (usage.promptTokens) {
+          tokensCounter.add(usage.promptTokens, { ...attrs, "mo.token": "prompt" });
+        }
+        if (usage.total) {
+          tokensCounter.add(usage.total, { ...attrs, "mo.token": "total" });
+        }
+
+        if (evt.costUsd) {
+          costCounter.add(evt.costUsd, attrs);
+        }
+        if (evt.durationMs) {
+          durationHistogram.record(evt.durationMs, attrs);
+        }
+        if (evt.context?.limit) {
+          contextHistogram.record(evt.context.limit, {
+            ...attrs,
+            "mo.context": "limit",
+          });
+        }
+        if (evt.context?.used) {
+          contextHistogram.record(evt.context.used, {
+            ...attrs,
+            "mo.context": "used",
+          });
+        }
+
+        if (!tracesEnabled) {
+          return;
+        }
+        const genAiInputTokens =
+          usage.promptTokens ??
+          (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+        const spanAttrs: Record<string, string | number> = {
+          ...attrs,
+          "mo.tokens.input": usage.input ?? 0,
+          "mo.tokens.output": usage.output ?? 0,
+          "mo.tokens.cache_read": usage.cacheRead ?? 0,
+          "mo.tokens.cache_write": usage.cacheWrite ?? 0,
+          "mo.tokens.total": usage.total ?? 0,
+        };
+        assignGenAiSpanIdentityAttrs(spanAttrs, evt);
+        assignPositiveNumberAttr(spanAttrs, "gen_ai.usage.input_tokens", genAiInputTokens);
+        assignPositiveNumberAttr(spanAttrs, "gen_ai.usage.output_tokens", usage.output);
+        assignPositiveNumberAttr(
+          spanAttrs,
+          "gen_ai.usage.cache_read.input_tokens",
+          usage.cacheRead,
+        );
+        assignPositiveNumberAttr(
+          spanAttrs,
+          "gen_ai.usage.cache_creation.input_tokens",
+          usage.cacheWrite,
+        );
+
+        const span = spanWithDuration("mo.model.usage", spanAttrs, evt.durationMs, {
+          parentContext: activeTrustedParentContext(evt, metadata),
+          endTimeMs: evt.ts,
+        });
+        span.end(evt.ts);
+      };
+
+      const recordWebhookReceived = (
+        evt: Extract<DiagnosticEventPayload, { type: "webhook.received" }>,
+      ) => {
+        const attrs = {
+          "mo.channel": evt.channel ?? "unknown",
+          "mo.webhook": evt.updateType ?? "unknown",
+        };
+        webhookReceivedCounter.add(1, attrs);
+      };
+
+      const recordWebhookProcessed = (
+        evt: Extract<DiagnosticEventPayload, { type: "webhook.processed" }>,
+      ) => {
+        const attrs = {
+          "mo.channel": lowCardinalityAttr(evt.channel),
+          "mo.webhook": lowCardinalityAttr(evt.updateType),
+        };
+        if (typeof evt.durationMs === "number") {
+          webhookDurationHistogram.record(evt.durationMs, attrs);
+        }
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number> = { ...attrs };
+        const span = spanWithDuration("mo.webhook.processed", spanAttrs, evt.durationMs);
+        span.end();
+      };
+
+      const recordWebhookError = (
+        evt: Extract<DiagnosticEventPayload, { type: "webhook.error" }>,
+      ) => {
+        const attrs = {
+          "mo.channel": lowCardinalityAttr(evt.channel),
+          "mo.webhook": lowCardinalityAttr(evt.updateType),
+        };
+        webhookErrorCounter.add(1, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const redactedError = redactSensitiveText(evt.error);
+        const spanAttrs: Record<string, string | number> = {
+          ...attrs,
+          "mo.error": redactedError,
+        };
+        const span = tracer.startSpan("mo.webhook.error", {
+          attributes: spanAttrs,
+        });
+        span.setStatus({ code: SpanStatusCode.ERROR, message: redactedError });
+        span.end();
+      };
+
+      const recordMessageQueued = (
+        evt: Extract<DiagnosticEventPayload, { type: "message.queued" }>,
+      ) => {
+        const attrs = {
+          "mo.channel": lowCardinalityAttr(evt.channel),
+          "mo.source": lowCardinalityAttr(evt.source),
+        };
+        messageQueuedCounter.add(1, attrs);
+        if (typeof evt.queueDepth === "number") {
+          queueDepthHistogram.record(evt.queueDepth, attrs);
+        }
+      };
+
+      const recordMessageReceived = (
+        evt: Extract<DiagnosticEventPayload, { type: "message.received" }>,
+      ) => {
+        messageReceivedCounter.add(1, {
+          "mo.channel": lowCardinalityAttr(evt.channel),
+          "mo.source": lowCardinalityAttr(evt.source),
+        });
+      };
+
+      const recordMessageDispatchStarted = (
+        evt: Extract<DiagnosticEventPayload, { type: "message.dispatch.started" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const attrs = {
+          "mo.channel": lowCardinalityAttr(evt.channel),
+          "mo.source": lowCardinalityAttr(evt.source),
+        };
+        messageDispatchStartedCounter.add(1, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const traceContext = internalOrTrustedTraceContext(evt, metadata);
+        if (!traceContext?.spanId || activeTrustedSpans.has(traceContext.spanId)) {
+          return;
+        }
+        trackInternalOrTrustedSpan(
+          evt,
+          metadata,
+          spanWithDuration("mo.message.processed", attrs, undefined, {
+            parentContext: internalOrTrustedExplicitParentContext(evt, metadata),
+            startTimeMs: evt.ts,
+          }),
+        );
+      };
+
+      const recordMessageDispatchCompleted = (
+        evt: Extract<DiagnosticEventPayload, { type: "message.dispatch.completed" }>,
+      ) => {
+        const attrs = {
+          "mo.channel": lowCardinalityAttr(evt.channel),
+          "mo.outcome": evt.outcome,
+          "mo.reason": lowCardinalityAttr(evt.reason, "none"),
+          "mo.source": lowCardinalityAttr(evt.source),
+        };
+        messageDispatchCompletedCounter.add(1, attrs);
+        messageDispatchDurationHistogram.record(evt.durationMs, attrs);
+      };
+
+      const recordMessageProcessed = (
+        evt: Extract<DiagnosticEventPayload, { type: "message.processed" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const attrs = {
+          "mo.channel": lowCardinalityAttr(evt.channel),
+          "mo.outcome": evt.outcome ?? "unknown",
+        };
+        messageProcessedCounter.add(1, attrs);
+        if (typeof evt.durationMs === "number") {
+          messageDurationHistogram.record(evt.durationMs, attrs);
+        }
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number> = { ...attrs };
+        if (evt.reason) {
+          spanAttrs["mo.reason"] = lowCardinalityAttr(evt.reason, "unknown");
+        }
+        const trackedSpan = getTrackedInternalOrTrustedSpan(evt, metadata);
+        const span =
+          trackedSpan ??
+          spanWithDuration("mo.message.processed", spanAttrs, evt.durationMs, {
+            parentContext: internalOrTrustedExplicitParentContext(evt, metadata),
+            endTimeMs: evt.ts,
+          });
+        setSpanAttrs(span, spanAttrs);
+        if (evt.outcome === "error" && evt.error) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: redactSensitiveText(evt.error) });
+        }
+        const traceContext = internalOrTrustedTraceContext(evt, metadata);
+        if (trackedSpan && traceContext?.spanId) {
+          completeTrackedLifecycleSpan(traceContext.spanId, trackedSpan, evt.ts);
+          return;
+        }
+        span.end(evt.ts);
+      };
+
+      const messageDeliveryAttrs = (
+        evt: MessageDeliveryDiagnosticEvent,
+      ): Record<string, string> => ({
+        "mo.channel": lowCardinalityAttr(evt.channel),
+        "mo.delivery.kind": lowCardinalityAttr(evt.deliveryKind, "other"),
+      });
+
+      const recordMessageDeliveryStarted = (
+        evt: Extract<DiagnosticEventPayload, { type: "message.delivery.started" }>,
+      ) => {
+        messageDeliveryStartedCounter.add(1, messageDeliveryAttrs(evt));
+      };
+
+      const recordMessageDeliveryCompleted = (
+        evt: Extract<DiagnosticEventPayload, { type: "message.delivery.completed" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const attrs = {
+          ...messageDeliveryAttrs(evt),
+          "mo.outcome": "completed",
+        };
+        messageDeliveryDurationHistogram.record(evt.durationMs, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const span = spanWithDuration(
+          "mo.message.delivery",
+          {
+            ...attrs,
+            "mo.delivery.result_count": evt.resultCount,
+          },
+          evt.durationMs,
+          { parentContext: activeInternalOrTrustedContext(evt, metadata), endTimeMs: evt.ts },
+        );
+        span.end(evt.ts);
+      };
+
+      const recordMessageDeliveryError = (
+        evt: Extract<DiagnosticEventPayload, { type: "message.delivery.error" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const attrs = {
+          ...messageDeliveryAttrs(evt),
+          "mo.outcome": "error",
+          "mo.errorCategory": lowCardinalityAttr(evt.errorCategory, "other"),
+        };
+        messageDeliveryDurationHistogram.record(evt.durationMs, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const span = spanWithDuration("mo.message.delivery", attrs, evt.durationMs, {
+          parentContext: activeInternalOrTrustedContext(evt, metadata),
+          endTimeMs: evt.ts,
+        });
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: redactSensitiveText(evt.errorCategory),
+        });
+        span.end(evt.ts);
+      };
+
+      const recordRunStarted = (
+        evt: Extract<DiagnosticEventPayload, { type: "run.started" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        if (!tracesEnabled || !metadata.trusted) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {};
+        addRunAttrs(spanAttrs, evt);
+        const span = trackTrustedSpan(
+          evt,
+          metadata,
+          spanWithDuration("mo.run", spanAttrs, undefined, {
+            parentContext: activeTrustedParentContext(evt, metadata),
+            startTimeMs: evt.ts,
+          }),
+        );
+        const parentSpanId = trustedTraceContext(evt, metadata)?.parentSpanId;
+        if (parentSpanId && !activeTrustedSpans.has(parentSpanId)) {
+          const owner: TrustedSpanAliasOwner = { kind: "run", id: evt.runId };
+          activeTrustedSpanAliases.set(trustedSpanAliasKey(parentSpanId, owner), {
+            span,
+            spanId: parentSpanId,
+            owner,
+          });
+        }
+      };
+
+      const recordLaneEnqueue = (
+        evt: Extract<DiagnosticEventPayload, { type: "queue.lane.enqueue" }>,
+      ) => {
+        const attrs = { "mo.lane": lowCardinalityQueueLaneAttr(evt.lane) };
+        laneEnqueueCounter.add(1, attrs);
+        queueDepthHistogram.record(evt.queueSize, attrs);
+      };
+
+      const recordLaneDequeue = (
+        evt: Extract<DiagnosticEventPayload, { type: "queue.lane.dequeue" }>,
+      ) => {
+        const attrs = { "mo.lane": lowCardinalityQueueLaneAttr(evt.lane) };
+        laneDequeueCounter.add(1, attrs);
+        queueDepthHistogram.record(evt.queueSize, attrs);
+        if (typeof evt.waitMs === "number") {
+          queueWaitHistogram.record(evt.waitMs, attrs);
+        }
+      };
+
+      const recordSessionState = (
+        evt: Extract<DiagnosticEventPayload, { type: "session.state" }>,
+      ) => {
+        const attrs: Record<string, string> = { "mo.state": evt.state };
+        if (evt.reason) {
+          attrs["mo.reason"] = redactSensitiveText(evt.reason);
+        }
+        sessionStateCounter.add(1, attrs);
+      };
+
+      const recordSessionTurnCreated = (
+        evt: Extract<DiagnosticEventPayload, { type: "session.turn.created" }>,
+      ) => {
+        sessionTurnCreatedCounter.add(1, {
+          "mo.agent": lowCardinalityAttr(evt.agentId, "unknown"),
+          "mo.channel": lowCardinalityAttr(evt.channel, "unknown"),
+          "mo.trigger": evt.trigger,
+        });
+      };
+
+      const recordSessionStuck = (
+        evt: Extract<DiagnosticEventPayload, { type: "session.stuck" }>,
+      ) => {
+        const attrs: Record<string, string> = { "mo.state": evt.state };
+        sessionStuckCounter.add(1, attrs);
+        if (typeof evt.ageMs === "number") {
+          sessionStuckAgeHistogram.record(evt.ageMs, attrs);
+        }
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number> = { ...attrs };
+        spanAttrs["mo.queueDepth"] = evt.queueDepth ?? 0;
+        spanAttrs["mo.ageMs"] = evt.ageMs;
+        const span = tracer.startSpan("mo.session.stuck", { attributes: spanAttrs });
+        span.setStatus({ code: SpanStatusCode.ERROR, message: "session stuck" });
+        span.end();
+      };
+
+      const sessionRecoveryAttrs = (evt: SessionRecoveryDiagnosticEvent) => {
+        const attrs: Record<string, string> = { "mo.state": evt.state };
+        if (evt.reason) {
+          attrs["mo.reason"] = redactSensitiveText(evt.reason);
+        }
+        if (evt.activeWorkKind) {
+          attrs["mo.active_work_kind"] = evt.activeWorkKind;
+        }
+        return attrs;
+      };
+
+      const recordSessionRecoveryRequested = (
+        evt: Extract<DiagnosticEventPayload, { type: "session.recovery.requested" }>,
+      ) => {
+        const attrs = sessionRecoveryAttrs(evt);
+        attrs["mo.action"] = evt.allowActiveAbort ? "abort" : "recover";
+        sessionRecoveryRequestedCounter.add(1, attrs);
+        sessionRecoveryAgeHistogram.record(evt.ageMs, attrs);
+      };
+
+      const recordSessionRecoveryCompleted = (
+        evt: Extract<DiagnosticEventPayload, { type: "session.recovery.completed" }>,
+      ) => {
+        const attrs = sessionRecoveryAttrs(evt);
+        attrs["mo.status"] = evt.status;
+        attrs["mo.action"] = lowCardinalityAttr(evt.action, "unknown");
+        if (evt.outcomeReason) {
+          attrs["mo.reason"] = redactSensitiveText(evt.outcomeReason);
+        }
+        sessionRecoveryCompletedCounter.add(1, attrs);
+        sessionRecoveryAgeHistogram.record(evt.ageMs, attrs);
+      };
+
+      const talkEventAttrs = (evt: TalkDiagnosticEvent): Record<string, string> => ({
+        "mo.talk.brain": lowCardinalityAttr(evt.brain),
+        "mo.talk.event_type": lowCardinalityAttr(evt.talkEventType),
+        "mo.talk.mode": lowCardinalityAttr(evt.mode),
+        "mo.talk.provider": lowCardinalityAttr(evt.provider),
+        "mo.talk.transport": lowCardinalityAttr(evt.transport),
+      });
+
+      const recordTalkEvent = (evt: TalkDiagnosticEvent, metadata: DiagnosticEventMetadata) => {
+        if (!metadata.trusted) {
+          return;
+        }
+        const attrs = talkEventAttrs(evt);
+        talkEventCounter.add(1, attrs);
+        if (typeof evt.durationMs === "number") {
+          talkEventDurationHistogram.record(evt.durationMs, attrs);
+        }
+        if (typeof evt.byteLength === "number") {
+          talkAudioBytesHistogram.record(evt.byteLength, attrs);
+        }
+      };
+
+      const recordRunAttempt = (evt: Extract<DiagnosticEventPayload, { type: "run.attempt" }>) => {
+        runAttemptCounter.add(1, { "mo.attempt": evt.attempt });
+      };
+
+      const toolLoopAttrs = (
+        evt: Extract<DiagnosticEventPayload, { type: "tool.loop" }>,
+      ): Record<string, string | number> => ({
+        "mo.toolName": lowCardinalityAttr(evt.toolName, "tool"),
+        "mo.loop.level": evt.level,
+        "mo.loop.action": evt.action,
+        "mo.loop.detector": evt.detector,
+        "mo.loop.count": evt.count,
+        ...(evt.pairedToolName
+          ? { "mo.loop.paired_tool": lowCardinalityAttr(evt.pairedToolName, "tool") }
+          : {}),
+      });
+
+      const recordToolLoop = (evt: Extract<DiagnosticEventPayload, { type: "tool.loop" }>) => {
+        const attrs = toolLoopAttrs(evt);
+        toolLoopCounter.add(1, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const span = spanWithDuration("mo.tool.loop", attrs, 0, { endTimeMs: evt.ts });
+        if (evt.level === "critical" || evt.action === "block") {
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: `${evt.detector}:${evt.action}`,
+          });
+        }
+        span.end(evt.ts);
+      };
+
+      const recordMemoryUsageMetrics = (
+        evt: Extract<
+          DiagnosticEventPayload,
+          { type: "diagnostic.memory.sample" | "diagnostic.memory.pressure" }
+        >,
+        attrs: Record<string, string> = {},
+      ) => {
+        memoryRssHistogram.record(evt.memory.rssBytes, attrs);
+        memoryHeapUsedHistogram.record(evt.memory.heapUsedBytes, attrs);
+        memoryHeapTotalHistogram.record(evt.memory.heapTotalBytes, attrs);
+        memoryExternalHistogram.record(evt.memory.externalBytes, attrs);
+        memoryArrayBuffersHistogram.record(evt.memory.arrayBuffersBytes, attrs);
+      };
+
+      const recordMemorySample = (
+        evt: Extract<DiagnosticEventPayload, { type: "diagnostic.memory.sample" }>,
+      ) => {
+        recordMemoryUsageMetrics(evt);
+      };
+
+      const recordMemoryPressure = (
+        evt: Extract<DiagnosticEventPayload, { type: "diagnostic.memory.pressure" }>,
+      ) => {
+        const attrs = {
+          "mo.memory.level": evt.level,
+          "mo.memory.reason": evt.reason,
+        };
+        memoryPressureCounter.add(1, attrs);
+        recordMemoryUsageMetrics(evt, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          ...attrs,
+          "mo.memory.rss_bytes": evt.memory.rssBytes,
+          "mo.memory.heap_used_bytes": evt.memory.heapUsedBytes,
+          "mo.memory.heap_total_bytes": evt.memory.heapTotalBytes,
+          "mo.memory.external_bytes": evt.memory.externalBytes,
+          "mo.memory.array_buffers_bytes": evt.memory.arrayBuffersBytes,
+          ...(evt.thresholdBytes !== undefined
+            ? { "mo.memory.threshold_bytes": evt.thresholdBytes }
+            : {}),
+          ...(evt.rssGrowthBytes !== undefined
+            ? { "mo.memory.rss_growth_bytes": evt.rssGrowthBytes }
+            : {}),
+          ...(evt.windowMs !== undefined ? { "mo.memory.window_ms": evt.windowMs } : {}),
+        };
+        const span = spanWithDuration("mo.memory.pressure", spanAttrs, 0, {
+          endTimeMs: evt.ts,
+        });
+        if (evt.level === "critical") {
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: evt.reason,
+          });
+        }
+        span.end(evt.ts);
+      };
+
+      const recordAsyncQueueDropped = (
+        evt: Extract<DiagnosticEventPayload, { type: "diagnostic.async_queue.dropped" }>,
+      ) => {
+        asyncQueueDroppedCounter.add(evt.droppedEvents, {
+          "mo.diagnostic.async_queue.drop_class": "total",
+        });
+        if (evt.droppedTrustedEvents !== undefined) {
+          asyncQueueDroppedCounter.add(evt.droppedTrustedEvents, {
+            "mo.diagnostic.async_queue.drop_class": "trusted",
+          });
+        }
+        if (evt.droppedUntrustedEvents !== undefined) {
+          asyncQueueDroppedCounter.add(evt.droppedUntrustedEvents, {
+            "mo.diagnostic.async_queue.drop_class": "untrusted",
+          });
+        }
+        if (evt.droppedPriorityEvents !== undefined) {
+          asyncQueueDroppedCounter.add(evt.droppedPriorityEvents, {
+            "mo.diagnostic.async_queue.drop_class": "priority",
+          });
+        }
+      };
+
+      const recordRunCompleted = (
+        evt: Extract<DiagnosticEventPayload, { type: "run.completed" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const attrs: Record<string, string | number> = {
+          "mo.outcome": evt.outcome,
+          "mo.provider": evt.provider ?? "unknown",
+          "mo.model": evt.model ?? "unknown",
+        };
+        if (evt.channel) {
+          attrs["mo.channel"] = evt.channel;
+        }
+        if (evt.blockedBy) {
+          attrs["mo.blocked_by"] = lowCardinalityAttr(evt.blockedBy, "unknown");
+        }
+        durationHistogram.record(evt.durationMs, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          "mo.outcome": evt.outcome,
+        };
+        addRunAttrs(spanAttrs, evt);
+        if (evt.blockedBy) {
+          spanAttrs["mo.blocked_by"] = lowCardinalityAttr(evt.blockedBy, "unknown");
+        }
+        if (evt.errorCategory) {
+          spanAttrs["mo.errorCategory"] = lowCardinalityAttr(evt.errorCategory, "other");
+        }
+        const trustedTrace = trustedTraceContext(evt, metadata);
+        const trackedSpan = trustedTrace?.spanId
+          ? activeTrustedSpans.get(trustedTrace.spanId)
+          : undefined;
+        const span =
+          trackedSpan ??
+          spanWithDuration("mo.run", spanAttrs, evt.durationMs, {
+            parentContext: activeTrustedParentContext(evt, metadata),
+            endTimeMs: evt.ts,
+          });
+        setSpanAttrs(span, spanAttrs);
+        if (evt.outcome === "error") {
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            ...(evt.errorCategory ? { message: redactSensitiveText(evt.errorCategory) } : {}),
+          });
+        }
+        if (trackedSpan && trustedTrace?.spanId) {
+          completeTrackedLifecycleSpan(trustedTrace.spanId, trackedSpan, evt.ts);
+          return;
+        }
+        span.end(evt.ts);
+      };
+
+      const harnessRunMetricAttrs = (evt: HarnessRunDiagnosticEvent) => ({
+        "mo.harness.id": lowCardinalityAttr(evt.harnessId, "unknown"),
+        "mo.harness.plugin": lowCardinalityAttr(evt.pluginId),
+        ...(evt.type === "harness.run.started"
+          ? {}
+          : {
+              "mo.outcome": evt.type === "harness.run.error" ? "error" : evt.outcome,
+            }),
+        "mo.provider": lowCardinalityAttr(evt.provider, "unknown"),
+        "mo.model": lowCardinalityAttr(evt.model, "unknown"),
+        ...(evt.channel ? { "mo.channel": lowCardinalityAttr(evt.channel) } : {}),
+      });
+
+      const recordHarnessRunStarted = (
+        evt: Extract<DiagnosticEventPayload, { type: "harness.run.started" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        if (!tracesEnabled || !metadata.trusted) {
+          return;
+        }
+        trackTrustedSpan(
+          evt,
+          metadata,
+          spanWithDuration("mo.harness.run", harnessRunMetricAttrs(evt), undefined, {
+            parentContext: activeTrustedParentContext(evt, metadata),
+            startTimeMs: evt.ts,
+          }),
+        );
+      };
+
+      const recordHarnessRunCompleted = (
+        evt: Extract<DiagnosticEventPayload, { type: "harness.run.completed" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        harnessDurationHistogram.record(evt.durationMs, harnessRunMetricAttrs(evt));
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          ...harnessRunMetricAttrs(evt),
+        };
+        if (evt.resultClassification) {
+          spanAttrs["mo.harness.result_classification"] = lowCardinalityAttr(
+            evt.resultClassification,
+          );
+        }
+        if (typeof evt.yieldDetected === "boolean") {
+          spanAttrs["mo.harness.yield_detected"] = evt.yieldDetected;
+        }
+        if (evt.itemLifecycle) {
+          spanAttrs["mo.harness.items.started"] = evt.itemLifecycle.startedCount;
+          spanAttrs["mo.harness.items.completed"] = evt.itemLifecycle.completedCount;
+          spanAttrs["mo.harness.items.active"] = evt.itemLifecycle.activeCount;
+        }
+        const trustedTrace = trustedTraceContext(evt, metadata);
+        const trackedSpan = trustedTrace?.spanId
+          ? activeTrustedSpans.get(trustedTrace.spanId)
+          : undefined;
+        const span =
+          trackedSpan ??
+          spanWithDuration("mo.harness.run", spanAttrs, evt.durationMs, {
+            parentContext: activeTrustedParentContext(evt, metadata),
+            endTimeMs: evt.ts,
+          });
+        setSpanAttrs(span, spanAttrs);
+        if (evt.outcome === "error") {
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: "error",
+          });
+        }
+        if (trackedSpan && trustedTrace?.spanId) {
+          completeTrackedLifecycleSpan(trustedTrace.spanId, trackedSpan, evt.ts);
+          return;
+        }
+        span.end(evt.ts);
+      };
+
+      const recordHarnessRunError = (
+        evt: Extract<DiagnosticEventPayload, { type: "harness.run.error" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const errorType = lowCardinalityAttr(evt.errorCategory, "other");
+        const attrs = {
+          ...harnessRunMetricAttrs(evt),
+          "mo.harness.phase": evt.phase,
+          "mo.errorCategory": errorType,
+        };
+        harnessDurationHistogram.record(evt.durationMs, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          ...attrs,
+          "error.type": errorType,
+          ...(evt.cleanupFailed ? { "mo.harness.cleanup_failed": true } : {}),
+        };
+        const span =
+          takeTrackedTrustedSpan(evt, metadata) ??
+          spanWithDuration("mo.harness.run", spanAttrs, evt.durationMs, {
+            parentContext: activeTrustedParentContext(evt, metadata),
+            endTimeMs: evt.ts,
+          });
+        setSpanAttrs(span, spanAttrs);
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: errorType,
+        });
+        span.end(evt.ts);
+      };
+
+      const recordContextAssembled = (
+        evt: Extract<DiagnosticEventPayload, { type: "context.assembled" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          "mo.context.message_count": evt.messageCount,
+          "mo.context.history_text_chars": evt.historyTextChars,
+          "mo.context.history_image_blocks": evt.historyImageBlocks,
+          "mo.context.max_message_text_chars": evt.maxMessageTextChars,
+          "mo.context.system_prompt_chars": evt.systemPromptChars,
+          "mo.context.prompt_chars": evt.promptChars,
+          "mo.context.prompt_images": evt.promptImages,
+        };
+        addRunAttrs(spanAttrs, evt);
+        if (evt.contextTokenBudget !== undefined) {
+          spanAttrs["mo.context.token_budget"] = evt.contextTokenBudget;
+        }
+        if (evt.reserveTokens !== undefined) {
+          spanAttrs["mo.context.reserve_tokens"] = evt.reserveTokens;
+        }
+        const span = spanWithDuration("mo.context.assembled", spanAttrs, 0, {
+          parentContext: activeTrustedParentContext(evt, metadata),
+          endTimeMs: evt.ts,
+        });
+        span.end(evt.ts);
+      };
+
+      const recordModelFailover = (
+        evt: ModelFailoverDiagnosticEvent,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        const metricAttrs: Record<string, string> = {
+          "mo.failover.reason": lowCardinalityAttr(evt.reason, "unknown"),
+          "mo.failover.suspended":
+            evt.suspended === undefined ? "unknown" : String(evt.suspended),
+          "mo.lane": lowCardinalityQueueLaneAttr(evt.lane, "unknown"),
+          "mo.model": lowCardinalityAttr(evt.fromModel),
+          "mo.provider": lowCardinalityAttr(evt.fromProvider),
+          "mo.failover.to_model": lowCardinalityAttr(evt.toModel),
+          "mo.failover.to_provider": lowCardinalityAttr(evt.toProvider),
+        };
+        modelFailoverCounter.add(1, metricAttrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          "mo.failover.reason": lowCardinalityAttr(evt.reason, "unknown"),
+        };
+        if (evt.fromProvider) {
+          spanAttrs["mo.provider"] = evt.fromProvider;
+        }
+        if (evt.fromModel) {
+          spanAttrs["mo.model"] = evt.fromModel;
+        }
+        if (evt.toProvider) {
+          spanAttrs["mo.failover.to_provider"] = evt.toProvider;
+        }
+        if (evt.toModel) {
+          spanAttrs["mo.failover.to_model"] = evt.toModel;
+        }
+        if (evt.lane) {
+          spanAttrs["mo.lane"] = lowCardinalityQueueLaneAttr(evt.lane, "unknown");
+        }
+        if (evt.suspended !== undefined) {
+          spanAttrs["mo.failover.suspended"] = evt.suspended;
+        }
+        if (evt.cascadeDepth !== undefined) {
+          spanAttrs["mo.failover.cascade_depth"] = evt.cascadeDepth;
+        }
+        const span = spanWithDuration("mo.model.failover", spanAttrs, 0, {
+          parentContext: activeTrustedParentContext(evt, metadata),
+          endTimeMs: evt.ts,
+        });
+        span.end(evt.ts);
+      };
+
+      const modelCallMetricAttrs = (evt: ModelCallLifecycleDiagnosticEvent) => ({
+        "mo.provider": evt.provider,
+        "mo.model": evt.model,
+        "mo.api": lowCardinalityAttr(evt.api),
+        "mo.transport": lowCardinalityAttr(evt.transport),
+      });
+      const genAiModelCallMetricAttrs = (
+        evt: ModelCallLifecycleDiagnosticEvent,
+        errorType?: string,
+      ) => ({
+        "gen_ai.operation.name": genAiOperationName(evt.api),
+        "gen_ai.provider.name": lowCardinalityAttr(evt.provider),
+        "gen_ai.request.model": lowCardinalityAttr(evt.model),
+        ...(errorType ? { "error.type": errorType } : {}),
+      });
+      const recordModelCallSizeTimingMetrics = (
+        evt: Extract<DiagnosticEventPayload, { type: "model.call.completed" | "model.call.error" }>,
+        attrs: ReturnType<typeof modelCallMetricAttrs>,
+      ) => {
+        const requestPayloadBytes = positiveFiniteNumber(evt.requestPayloadBytes);
+        if (requestPayloadBytes !== undefined) {
+          modelCallRequestBytesHistogram.record(requestPayloadBytes, attrs);
+        }
+        const responseStreamBytes = positiveFiniteNumber(evt.responseStreamBytes);
+        if (responseStreamBytes !== undefined) {
+          modelCallResponseBytesHistogram.record(responseStreamBytes, attrs);
+        }
+        const timeToFirstByteMs = positiveFiniteNumber(evt.timeToFirstByteMs);
+        if (timeToFirstByteMs !== undefined) {
+          modelCallTimeToFirstByteHistogram.record(timeToFirstByteMs, attrs);
+        }
+      };
+
+      const recordModelCallStarted = (
+        evt: Extract<DiagnosticEventPayload, { type: "model.call.started" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        if (!tracesEnabled || !metadata.trusted) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          "mo.provider": evt.provider,
+          "mo.model": evt.model,
+        };
+        assignGenAiModelCallAttrs(spanAttrs, evt);
+        if (evt.api) {
+          spanAttrs["mo.api"] = evt.api;
+        }
+        if (evt.transport) {
+          spanAttrs["mo.transport"] = evt.transport;
+        }
+        assignModelCallPromptStatsAttrs(spanAttrs, evt);
+        trackTrustedSpan(
+          evt,
+          metadata,
+          spanWithDuration(modelCallSpanName(evt), spanAttrs, undefined, {
+            kind: modelCallSpanKind(),
+            parentContext: activeTrustedParentContext(evt, metadata),
+            startTimeMs: evt.ts,
+          }),
+        );
+      };
+
+      const recordModelCallCompleted = (
+        evt: Extract<DiagnosticEventPayload, { type: "model.call.completed" }>,
+        metadata: DiagnosticEventMetadata,
+        modelContent?: OtelModelCallContent,
+      ) => {
+        const metricAttrs = modelCallMetricAttrs(evt);
+        modelCallDurationHistogram.record(evt.durationMs, metricAttrs);
+        recordModelCallSizeTimingMetrics(evt, metricAttrs);
+        genAiOperationDurationHistogram.record(
+          evt.durationMs / 1000,
+          genAiModelCallMetricAttrs(evt),
+        );
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          "mo.provider": evt.provider,
+          "mo.model": evt.model,
+        };
+        assignGenAiModelCallAttrs(spanAttrs, evt);
+        if (evt.api) {
+          spanAttrs["mo.api"] = evt.api;
+        }
+        if (evt.transport) {
+          spanAttrs["mo.transport"] = evt.transport;
+        }
+        assignModelCallSizeTimingAttrs(spanAttrs, evt);
+        assignModelCallPromptStatsAttrs(spanAttrs, evt);
+        assignModelCallUsageAttrs(spanAttrs, evt);
+        assignOtelModelContentAttributes(spanAttrs, modelContent, contentCapturePolicy);
+        const span =
+          takeTrackedTrustedSpan(evt, metadata) ??
+          spanWithDuration(modelCallSpanName(evt), spanAttrs, evt.durationMs, {
+            kind: modelCallSpanKind(),
+            parentContext: activeTrustedParentContext(evt, metadata),
+            endTimeMs: evt.ts,
+          });
+        setSpanAttrs(span, spanAttrs);
+        addUpstreamRequestIdSpanEvent(span, evt.upstreamRequestIdHash);
+        span.end(evt.ts);
+      };
+
+      const recordModelCallError = (
+        evt: Extract<DiagnosticEventPayload, { type: "model.call.error" }>,
+        metadata: DiagnosticEventMetadata,
+        modelContent?: OtelModelCallContent,
+      ) => {
+        const errorType = lowCardinalityAttr(evt.errorCategory, "other");
+        const metricAttrs = {
+          ...modelCallMetricAttrs(evt),
+          "mo.errorCategory": errorType,
+          ...(evt.failureKind
+            ? { "mo.failureKind": lowCardinalityAttr(evt.failureKind, "other") }
+            : {}),
+        };
+        modelCallDurationHistogram.record(evt.durationMs, metricAttrs);
+        recordModelCallSizeTimingMetrics(evt, metricAttrs);
+        genAiOperationDurationHistogram.record(
+          evt.durationMs / 1000,
+          genAiModelCallMetricAttrs(evt, errorType),
+        );
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          "mo.provider": evt.provider,
+          "mo.model": evt.model,
+          "mo.errorCategory": errorType,
+          "error.type": errorType,
+        };
+        if (evt.failureKind) {
+          spanAttrs["mo.failureKind"] = lowCardinalityAttr(evt.failureKind, "other");
+        }
+        assignGenAiModelCallAttrs(spanAttrs, evt);
+        if (evt.api) {
+          spanAttrs["mo.api"] = evt.api;
+        }
+        if (evt.transport) {
+          spanAttrs["mo.transport"] = evt.transport;
+        }
+        assignModelCallSizeTimingAttrs(spanAttrs, evt);
+        assignModelCallPromptStatsAttrs(spanAttrs, evt);
+        assignModelCallUsageAttrs(spanAttrs, evt);
+        assignOtelModelContentAttributes(spanAttrs, modelContent, contentCapturePolicy);
+        const span =
+          takeTrackedTrustedSpan(evt, metadata) ??
+          spanWithDuration(modelCallSpanName(evt), spanAttrs, evt.durationMs, {
+            kind: modelCallSpanKind(),
+            parentContext: activeTrustedParentContext(evt, metadata),
+            endTimeMs: evt.ts,
+          });
+        setSpanAttrs(span, spanAttrs);
+        addUpstreamRequestIdSpanEvent(span, evt.upstreamRequestIdHash);
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: redactSensitiveText(evt.errorCategory),
+        });
+        span.end(evt.ts);
+      };
+
+      const toolExecutionBaseAttrs = (
+        evt: Extract<
+          DiagnosticEventPayload,
+          {
+            type:
+              | "tool.execution.started"
+              | "tool.execution.completed"
+              | "tool.execution.error"
+              | "tool.execution.blocked";
+          }
+        >,
+      ): Record<string, string | number | boolean> => ({
+        "mo.toolName": evt.toolName,
+        "mo.tool.source": lowCardinalityAttr(evt.toolSource, "core"),
+        "gen_ai.tool.name": evt.toolName,
+        ...(evt.toolOwner ? { "mo.tool.owner": lowCardinalityAttr(evt.toolOwner) } : {}),
+        ...paramsSummaryAttrs(evt.paramsSummary),
+      });
+
+      const skillUsedAttrs = (
+        evt: Extract<DiagnosticEventPayload, { type: "skill.used" }>,
+      ): Record<string, string | number | boolean> => ({
+        "mo.skill.name": lowCardinalityAttr(evt.skillName, "skill"),
+        "mo.skill.source": lowCardinalityAttr(evt.skillSource),
+        "mo.skill.activation": lowCardinalityAttr(evt.activation),
+        ...(evt.agentId ? { "mo.agent": lowCardinalityAttr(evt.agentId) } : {}),
+        ...(evt.toolName ? { "mo.toolName": lowCardinalityAttr(evt.toolName, "tool") } : {}),
+      });
+
+      const recordSkillUsed = (
+        evt: Extract<DiagnosticEventPayload, { type: "skill.used" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        if (!metadata.trusted) {
+          return;
+        }
+        const attrs = skillUsedAttrs(evt);
+        skillUsedCounter.add(1, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = { ...attrs };
+        addRunAttrs(spanAttrs, evt);
+        const span = spanWithDuration("mo.skill.used", spanAttrs, 0, {
+          parentContext: activeTrustedParentContext(evt, metadata),
+          endTimeMs: evt.ts,
+        });
+        setSpanAttrs(span, spanAttrs);
+        span.end(evt.ts);
+      };
+
+      const recordToolExecutionStarted = (
+        evt: Extract<DiagnosticEventPayload, { type: "tool.execution.started" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        if (!tracesEnabled || !metadata.trusted) {
+          return;
+        }
+        trackTrustedSpan(
+          evt,
+          metadata,
+          spanWithDuration("mo.tool.execution", toolExecutionBaseAttrs(evt), undefined, {
+            parentContext: activeTrustedParentContext(evt, metadata),
+            startTimeMs: evt.ts,
+          }),
+        );
+      };
+
+      const recordToolExecutionCompleted = (
+        evt: Extract<DiagnosticEventPayload, { type: "tool.execution.completed" }>,
+        metadata: DiagnosticEventMetadata,
+        toolContent?: OtelToolCallContent,
+      ) => {
+        const attrs = toolExecutionBaseAttrs(evt);
+        toolExecutionDurationHistogram.record(evt.durationMs, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          ...toolExecutionBaseAttrs(evt),
+        };
+        addRunAttrs(spanAttrs, evt);
+        assignOtelToolContentAttributes(spanAttrs, toolContent, contentCapturePolicy);
+        const span =
+          takeTrackedTrustedSpan(evt, metadata) ??
+          spanWithDuration("mo.tool.execution", spanAttrs, evt.durationMs, {
+            parentContext: activeTrustedParentContext(evt, metadata),
+            endTimeMs: evt.ts,
+          });
+        setSpanAttrs(span, spanAttrs);
+        span.end(evt.ts);
+      };
+
+      const recordToolExecutionError = (
+        evt: Extract<DiagnosticEventPayload, { type: "tool.execution.error" }>,
+        metadata: DiagnosticEventMetadata,
+        toolContent?: OtelToolCallContent,
+      ) => {
+        const attrs = {
+          ...toolExecutionBaseAttrs(evt),
+          "mo.errorCategory": lowCardinalityAttr(evt.errorCategory, "other"),
+        };
+        toolExecutionDurationHistogram.record(evt.durationMs, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          ...toolExecutionBaseAttrs(evt),
+          "mo.errorCategory": lowCardinalityAttr(evt.errorCategory, "other"),
+        };
+        addRunAttrs(spanAttrs, evt);
+        if (evt.errorCode) {
+          spanAttrs["mo.errorCode"] = lowCardinalityAttr(evt.errorCode, "other");
+        }
+        assignOtelToolContentAttributes(spanAttrs, toolContent, contentCapturePolicy);
+        const span =
+          takeTrackedTrustedSpan(evt, metadata) ??
+          spanWithDuration("mo.tool.execution", spanAttrs, evt.durationMs, {
+            parentContext: activeTrustedParentContext(evt, metadata),
+            endTimeMs: evt.ts,
+          });
+        setSpanAttrs(span, spanAttrs);
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: redactSensitiveText(evt.errorCategory),
+        });
+        span.end(evt.ts);
+      };
+
+      const recordToolExecutionBlocked = (
+        evt: Extract<DiagnosticEventPayload, { type: "tool.execution.blocked" }>,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        toolExecutionBlockedCounter.add(1, {
+          ...toolExecutionBaseAttrs(evt),
+          "mo.deniedReason": lowCardinalityAttr(evt.deniedReason, "other"),
+        });
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = {
+          ...toolExecutionBaseAttrs(evt),
+          "mo.outcome": "blocked",
+          "mo.deniedReason": lowCardinalityAttr(evt.deniedReason, "other"),
+        };
+        addRunAttrs(spanAttrs, evt);
+        const span = spanWithDuration("mo.tool.execution", spanAttrs, 0, {
+          parentContext: activeTrustedParentContext(evt, metadata),
+          endTimeMs: evt.ts,
+        });
+        setSpanAttrs(span, spanAttrs);
+        span.end(evt.ts);
+      };
+
+      const recordPayloadLarge = (
+        evt: Extract<DiagnosticEventPayload, { type: "payload.large" }>,
+      ) => {
+        const attrs = {
+          "mo.payload.action": evt.action,
+          "mo.payload.surface": lowCardinalityAttr(evt.surface, "unknown"),
+          "mo.channel": lowCardinalityAttr(evt.channel, "none"),
+          "mo.plugin": lowCardinalityAttr(evt.pluginId, "none"),
+          "mo.reason": lowCardinalityAttr(evt.reason, "none"),
+        };
+        payloadLargeCounter.add(1, attrs);
+        const bytes = positiveFiniteNumber(evt.bytes);
+        if (bytes !== undefined) {
+          payloadLargeBytesHistogram.record(bytes, attrs);
+        }
+      };
+
+      const recordExecProcessCompleted = (
+        evt: Extract<DiagnosticEventPayload, { type: "exec.process.completed" }>,
+      ) => {
+        const attrs: Record<string, string | number> = {
+          "mo.exec.target": evt.target,
+          "mo.exec.mode": evt.mode,
+          "mo.outcome": evt.outcome,
+        };
+        if (evt.failureKind) {
+          attrs["mo.failureKind"] = evt.failureKind;
+        }
+        execProcessDurationHistogram.record(evt.durationMs, attrs);
+        if (!tracesEnabled) {
+          return;
+        }
+
+        const spanAttrs: Record<string, string | number | boolean> = {
+          ...attrs,
+          "mo.exec.command_length": evt.commandLength,
+        };
+        if (typeof evt.exitCode === "number") {
+          spanAttrs["mo.exec.exit_code"] = evt.exitCode;
+        }
+        if (evt.exitSignal) {
+          spanAttrs["mo.exec.exit_signal"] = lowCardinalityAttr(evt.exitSignal, "other");
+        }
+        if (evt.timedOut !== undefined) {
+          spanAttrs["mo.exec.timed_out"] = evt.timedOut;
+        }
+
+        const span = spanWithDuration("mo.exec", spanAttrs, evt.durationMs, {
+          endTimeMs: evt.ts,
+        });
+        if (evt.outcome === "failed") {
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            ...(evt.failureKind ? { message: evt.failureKind } : {}),
+          });
+        }
+        span.end(evt.ts);
+      };
+
+      const recordHeartbeat = (
+        evt: Extract<DiagnosticEventPayload, { type: "diagnostic.heartbeat" }>,
+      ) => {
+        queueDepthHistogram.record(evt.queued, { "mo.channel": "heartbeat" });
+      };
+
+      const recordLivenessWarning = (
+        evt: Extract<DiagnosticEventPayload, { type: "diagnostic.liveness.warning" }>,
+      ) => {
+        const reason = evt.reasons.join(":");
+        const attrs = {
+          "mo.liveness.reason": lowCardinalityAttr(reason, "unknown"),
+        };
+        livenessWarningCounter.add(1, attrs);
+        queueDepthHistogram.record(evt.queued, { "mo.channel": "liveness" });
+        if (evt.eventLoopDelayP99Ms !== undefined) {
+          livenessEventLoopDelayP99Histogram.record(evt.eventLoopDelayP99Ms, attrs);
+        }
+        if (evt.eventLoopDelayMaxMs !== undefined) {
+          livenessEventLoopDelayMaxHistogram.record(evt.eventLoopDelayMaxMs, attrs);
+        }
+        if (evt.eventLoopUtilization !== undefined) {
+          livenessEventLoopUtilizationHistogram.record(evt.eventLoopUtilization, attrs);
+        }
+        if (evt.cpuCoreRatio !== undefined) {
+          livenessCpuCoreRatioHistogram.record(evt.cpuCoreRatio, attrs);
+        }
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number> = {
+          ...attrs,
+          "mo.liveness.active": evt.active,
+          "mo.liveness.waiting": evt.waiting,
+          "mo.liveness.queued": evt.queued,
+          "mo.liveness.interval_ms": evt.intervalMs,
+          ...(evt.eventLoopDelayP99Ms !== undefined
+            ? { "mo.liveness.event_loop_delay_p99_ms": evt.eventLoopDelayP99Ms }
+            : {}),
+          ...(evt.eventLoopDelayMaxMs !== undefined
+            ? { "mo.liveness.event_loop_delay_max_ms": evt.eventLoopDelayMaxMs }
+            : {}),
+          ...(evt.eventLoopUtilization !== undefined
+            ? { "mo.liveness.event_loop_utilization": evt.eventLoopUtilization }
+            : {}),
+          ...(evt.cpuUserMs !== undefined
+            ? { "mo.liveness.cpu_user_ms": evt.cpuUserMs }
+            : {}),
+          ...(evt.cpuSystemMs !== undefined
+            ? { "mo.liveness.cpu_system_ms": evt.cpuSystemMs }
+            : {}),
+          ...(evt.cpuTotalMs !== undefined
+            ? { "mo.liveness.cpu_total_ms": evt.cpuTotalMs }
+            : {}),
+          ...(evt.cpuCoreRatio !== undefined
+            ? { "mo.liveness.cpu_core_ratio": evt.cpuCoreRatio }
+            : {}),
+        };
+        const span = spanWithDuration("mo.liveness.warning", spanAttrs, 0, {
+          endTimeMs: evt.ts,
+        });
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: reason,
+        });
+        span.end(evt.ts);
+      };
+
+      const recordDiagnosticPhaseCompleted = (
+        evt: Extract<DiagnosticEventPayload, { type: "diagnostic.phase.completed" }>,
+      ) => {
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number> = {
+          "mo.phase": lowCardinalityAttr(evt.name, "unknown"),
+          ...(evt.cpuUserMs !== undefined ? { "mo.phase.cpu_user_ms": evt.cpuUserMs } : {}),
+          ...(evt.cpuSystemMs !== undefined
+            ? { "mo.phase.cpu_system_ms": evt.cpuSystemMs }
+            : {}),
+          ...(evt.cpuTotalMs !== undefined
+            ? { "mo.phase.cpu_total_ms": evt.cpuTotalMs }
+            : {}),
+          ...(evt.cpuCoreRatio !== undefined
+            ? { "mo.phase.cpu_core_ratio": evt.cpuCoreRatio }
+            : {}),
+        };
+        for (const [key, value] of Object.entries(evt.details ?? {})) {
+          spanAttrs[`mo.phase.detail.${key}`] =
+            typeof value === "boolean" ? String(value) : value;
+        }
+        const span = spanWithDuration("mo.diagnostic.phase", spanAttrs, evt.durationMs, {
+          endTimeMs: evt.ts,
+        });
+        span.end(evt.ts);
+      };
+
+      const recordTelemetryExporter = (
+        evt: TelemetryExporterDiagnosticEvent,
+        metadata: DiagnosticEventMetadata,
+      ) => {
+        if (!metadata.trusted) {
+          return;
+        }
+        telemetryExporterCounter.add(1, {
+          "mo.exporter": lowCardinalityAttr(evt.exporter, "unknown"),
+          "mo.signal": evt.signal,
+          "mo.status": evt.status,
+          ...(evt.reason ? { "mo.reason": evt.reason } : {}),
+          ...(evt.errorCategory
+            ? { "mo.errorCategory": lowCardinalityAttr(evt.errorCategory, "other") }
+            : {}),
+        });
+      };
+
+      const subscribe = ctx.internalDiagnostics?.onEvent;
+      if (!subscribe) {
+        ctx.logger.error("diagnostics-otel: internal diagnostics capability unavailable");
+        return;
+      }
+
+      unsubscribe = subscribe((evt, metadata, privateData) => {
+        try {
+          switch (evt.type) {
+            case "model.usage":
+              recordModelUsage(evt, metadata);
+              return;
+            case "webhook.received":
+              recordWebhookReceived(evt);
+              return;
+            case "webhook.processed":
+              recordWebhookProcessed(evt);
+              return;
+            case "webhook.error":
+              recordWebhookError(evt);
+              return;
+            case "message.queued":
+              recordMessageQueued(evt);
+              return;
+            case "message.received":
+              recordMessageReceived(evt);
+              return;
+            case "message.dispatch.started":
+              recordMessageDispatchStarted(evt, metadata);
+              return;
+            case "message.dispatch.completed":
+              recordMessageDispatchCompleted(evt);
+              return;
+            case "message.processed":
+              recordMessageProcessed(evt, metadata);
+              return;
+            case "message.delivery.started":
+              recordMessageDeliveryStarted(evt);
+              return;
+            case "message.delivery.completed":
+              recordMessageDeliveryCompleted(evt, metadata);
+              return;
+            case "message.delivery.error":
+              recordMessageDeliveryError(evt, metadata);
+              return;
+            case "talk.event":
+              recordTalkEvent(evt, metadata);
+              return;
+            case "queue.lane.enqueue":
+              recordLaneEnqueue(evt);
+              return;
+            case "queue.lane.dequeue":
+              recordLaneDequeue(evt);
+              return;
+            case "session.state":
+              recordSessionState(evt);
+              return;
+            case "session.long_running":
+            case "session.stalled":
+              return;
+            case "session.turn.created":
+              recordSessionTurnCreated(evt);
+              return;
+            case "session.stuck":
+              recordSessionStuck(evt);
+              return;
+            case "session.recovery.requested":
+              recordSessionRecoveryRequested(evt);
+              return;
+            case "session.recovery.completed":
+              recordSessionRecoveryCompleted(evt);
+              return;
+            case "run.attempt":
+              recordRunAttempt(evt);
+              return;
+            case "run.progress":
+              return;
+            case "diagnostic.heartbeat":
+              recordHeartbeat(evt);
+              return;
+            case "diagnostic.liveness.warning":
+              recordLivenessWarning(evt);
+              return;
+            case "diagnostic.phase.completed":
+              recordDiagnosticPhaseCompleted(evt);
+              return;
+            case "run.started":
+              recordRunStarted(evt, metadata);
+              return;
+            case "run.completed":
+              recordRunCompleted(evt, metadata);
+              return;
+            case "harness.run.started":
+              recordHarnessRunStarted(evt, metadata);
+              return;
+            case "harness.run.completed":
+              recordHarnessRunCompleted(evt, metadata);
+              return;
+            case "harness.run.error":
+              recordHarnessRunError(evt, metadata);
+              return;
+            case "context.assembled":
+              recordContextAssembled(evt, metadata);
+              return;
+            case "model.call.started":
+              recordModelCallStarted(evt, metadata);
+              return;
+            case "model.call.completed":
+              recordModelCallCompleted(evt, metadata, privateData.modelContent);
+              return;
+            case "model.call.error":
+              recordModelCallError(evt, metadata, privateData.modelContent);
+              return;
+            case "tool.execution.started":
+              recordToolExecutionStarted(evt, metadata);
+              return;
+            case "tool.execution.completed":
+              recordToolExecutionCompleted(evt, metadata, privateData.toolContent);
+              return;
+            case "tool.execution.error":
+              recordToolExecutionError(evt, metadata, privateData.toolContent);
+              return;
+            case "tool.execution.blocked":
+              recordToolExecutionBlocked(evt, metadata);
+              return;
+            case "skill.used":
+              recordSkillUsed(evt, metadata);
+              return;
+            case "exec.process.completed":
+              recordExecProcessCompleted(evt);
+              return;
+            case "exec.approval.followup_suppressed":
+              return;
+            case "log.record":
+              recordLogRecord?.(evt, metadata);
+              return;
+            case "security.event":
+              recordSecurityEvent?.(evt, metadata);
+              return;
+            case "tool.loop":
+              recordToolLoop(evt);
+              return;
+            case "diagnostic.memory.sample":
+              recordMemorySample(evt);
+              return;
+            case "diagnostic.memory.pressure":
+              recordMemoryPressure(evt);
+              return;
+            case "diagnostic.async_queue.dropped":
+              recordAsyncQueueDropped(evt);
+              return;
+            case "telemetry.exporter":
+              recordTelemetryExporter(evt, metadata);
+              return;
+            case "payload.large":
+              recordPayloadLarge(evt);
+              return;
+            case "model.failover":
+              recordModelFailover(evt, metadata);
+          }
+        } catch (err) {
+          ctx.logger.error(
+            `diagnostics-otel: event handler failed (${evt.type}): ${formatError(err)}`,
+          );
+        }
+      });
+
+      unregisterUnhandledRejectionHandler = registerUnhandledRejectionHandler((reason) => {
+        const otlpError = findOtlpExporterError(reason);
+        if (!otlpError) {
+          return false;
+        }
+        const code = readErrorCode(otlpError) ?? "unknown";
+        ctx.logger.warn(
+          `diagnostics-otel: suppressed OTLP exporter unhandled rejection (code=${String(code)})`,
+        );
+        return true;
+      });
+
+      emitForSignals(enabledSignals, {
+        exporter: "diagnostics-otel",
+        status: "started",
+        reason: "configured",
+      });
+
+      if (logsEnabled) {
+        const label =
+          logsExporter === "both"
+            ? "OTLP/Protobuf + stdout JSONL"
+            : logsExporter === "stdout"
+              ? "stdout JSONL"
+              : "OTLP/Protobuf";
+        ctx.logger.info(`diagnostics-otel: logs exporter enabled (${label})`);
+      }
+    },
+    async stop() {
+      await stopStarted();
+    },
+  } satisfies OpenClawPluginService;
+}

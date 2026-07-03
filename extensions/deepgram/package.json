@@ -1,0 +1,15 @@
+{
+  "name": "@mo/deepgram-provider",
+  "version": "2026.6.11",
+  "private": true,
+  "description": "OpenClaw Deepgram media-understanding provider",
+  "type": "module",
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*"
+  },
+  "mo": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

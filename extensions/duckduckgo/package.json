@@ -1,0 +1,15 @@
+{
+  "name": "@mo/duckduckgo-plugin",
+  "version": "2026.6.11",
+  "private": true,
+  "description": "OpenClaw DuckDuckGo plugin",
+  "type": "module",
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*"
+  },
+  "mo": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>架构审查 — Magic Orange Base</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+mermaid.initialize({startOnLoad:true,theme:"neutral",securityLevel:"loose"});
+</script>
+<style>
+.seam{stroke-dasharray:4 4}.leak{stroke:#dc2626}.deep{background:linear-gradient(135deg,#0f172a,#1e293b)}
+.badge-strong{background:#059669;color:#fff}.badge-worth{background:#d97706;color:#fff}.badge-spec{background:#64748b;color:#fff}
+.card{border:1px solid #e2e8f0;border-radius:12px;padding:1.5rem;background:#fff}
+.mass-if{background:#e2e8f0;font-size:.75rem;padding:.25rem .5rem;border-radius:4px}
+.mass-impl{background:#0f172a;color:#fff;font-size:.75rem;padding:.5rem .75rem;border-radius:4px;font-weight:600}
+.warn{background:#fffbeb;border-left:4px solid #d97706;padding:.75rem 1rem;font-size:.875rem;color:#92400e;border-radius:0 8px 8px 0}
+</style>
+</head>
+<body class="bg-stone-50 text-slate-900 font-sans">
+<main class="max-w-5xl mx-auto px-6 py-12 space-y-12">
+
+<header class="space-y-4">
+<h1 class="text-3xl font-serif font-bold">Magic Orange Base — 架构审查</h1>
+<p class="text-sm text-slate-500">2026-07-03 · 基于代码库深度探索 · 25 核心模块 · 5 核心包 · 9 核心插件</p>
+<div class="flex gap-6 text-xs uppercase tracking-wider text-slate-400">
+<span class="flex items-center gap-2"><span class="w-4 h-4 border-2 border-slate-400 rounded"></span>模块</span>
+<span class="flex items-center gap-2"><span class="w-4 h-4 border-2 border-slate-400 rounded" style="border-style:dashed"></span>接缝</span>
+<span class="flex items-center gap-2"><span class="w-4 h-4 bg-red-500 rounded"></span>泄漏</span>
+<span class="flex items-center gap-2"><span class="w-4 h-4 bg-slate-800 rounded"></span>深层模块</span>
+</div>
+</header>
+
+<section id="candidates" class="space-y-10">
+
+<!-- C1: agent-command.ts -->
+<article class="card space-y-5">
+<div class="flex items-center gap-3 flex-wrap">
+<h2 class="text-xl font-serif font-bold">1. 拆解 agent-command 巨型浅层模块</h2>
+<span class="badge-strong text-xs px-2 py-1 rounded-full font-semibold">Strong</span>
+<span class="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200">in-process</span>
+</div>
+<div class="font-mono text-xs text-slate-500 bg-slate-50 p-2 rounded">src/agents/agent-command.ts (90KB) · agent-tools.ts (51KB) · agent-scope.ts</div>
+<div class="grid grid-cols-2 gap-6">
+<div class="space-y-2">
+<p class="text-xs uppercase tracking-wider text-slate-400 font-semibold">Before — 浅层</p>
+<div class="rounded-lg border border-slate-200 bg-white p-3">
+<pre class="mermaid">
+flowchart TD
+    AC["agent-command.ts 90KB"] --> SM["会话管理"]
+    AC --> MS["模型选择"]
+    AC --> DR["投递/重试"]
+    AC --> FB["Fallback"]
+    AC --> SD["技能发现"]
+    AC --> TR["轨迹记录"]
+    style AC fill:#dc2626,stroke:#991b1b,color:#fff
+</pre>
+</div>
+<p class="text-xs text-red-500">接口 ~实现复杂度 · 80+ 导入 · 2500+ 行</p>
+</div>
+<div class="space-y-2">
+<p class="text-xs uppercase tracking-wider text-slate-400 font-semibold">After — 深层</p>
+<div class="rounded-lg border border-slate-200 bg-white p-3">
+<pre class="mermaid">
+flowchart TD
+    OC["orchestrator ~200行"] --> SS["session-strategy"]
+    OC --> MR["model-resolver"]
+    OC --> DP["delivery-pipeline"]
+    OC --> SK["skill-discovery"]
+    OC --> TR2["trajectory"]
+    style OC fill:#0f172a,stroke:#0f172a,color:#fff
+    style SS fill:#1e293b,stroke:#334155,color:#fff
+    style MR fill:#1e293b,stroke:#334155,color:#fff
+    style DP fill:#1e293b,stroke:#334155,color:#fff
+    style SK fill:#1e293b,stroke:#334155,color:#fff
+    style TR2 fill:#1e293b,stroke:#334155,color:#fff
+</pre>
+</div>
+<p class="text-xs text-emerald-600">每个子模块 ~5-10 个导出</p>
+</div>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Problem</p>
+<p class="text-sm text-slate-700">浅层模块典型——接口与实现一样复杂。90KB 单文件承载 8 项职责，80+ 内部导入跨越 15 个命名空间。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Solution</p>
+<p class="text-sm text-slate-700">按职责拆分为 5-6 个聚焦模块，orchestrator 作为薄编排层，通过依赖注入连接。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Wins</p>
+<ul class="text-sm text-slate-700 space-y-0.5">
+<li>• <strong>locality</strong>：bug 集中在单一模块</li>
+<li>• <strong>leverage</strong>：一个接口，N 个调用点</li>
+<li>• 测试从集成变为单元</li>
+<li>• 删除 3 个浅层包装器</li>
+</ul>
+</div>
+</article>
+
+<!-- C2: Config Types -->
+<article class="card space-y-5">
+<div class="flex items-center gap-3 flex-wrap">
+<h2 class="text-xl font-serif font-bold">2. 收敛 Config 类型散弹</h2>
+<span class="badge-strong text-xs px-2 py-1 rounded-full font-semibold">Strong</span>
+<span class="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200">in-process</span>
+</div>
+<div class="font-mono text-xs text-slate-500 bg-slate-50 p-2 rounded">src/config/types.ts (barrel) · types.*.ts (40+ 文件) · env-keys.ts · schema.ts</div>
+<div class="grid grid-cols-2 gap-6">
+<div class="space-y-2">
+<p class="text-xs uppercase tracking-wider text-slate-400 font-semibold">Before — 散弹式</p>
+<div class="rounded-lg border border-slate-200 bg-white p-3">
+<div class="flex flex-wrap gap-1">
+<span class="mass-if">types.agent-defaults</span>
+<span class="mass-if">types.agents</span>
+<span class="mass-if">types.channels</span>
+<span class="mass-if">types.models</span>
+<span class="mass-if">types.plugins</span>
+<span class="mass-if">types.gateway</span>
+<span class="mass-if">types.mo</span>
+<span class="mass-if">types.cli</span>
+<span class="mass-if">types.skills</span>
+<span class="mass-if">types.hooks</span>
+<span class="mass-if">types.secrets</span>
+<span class="mass-if">types.sandbox</span>
+<span class="mass-if">types.tools</span>
+<span class="mass-if">types.memory</span>
+<span class="mass-if">types.mcp</span>
+<span class="mass-if">types.discord</span>
+<span class="mass-if">types.slack</span>
+<span class="mass-if">types.telegram</span>
+<span class="px-2 py-0.5 rounded bg-red-100 text-red-700 text-xs">+20 more…</span>
+</div>
+<p class="text-xs text-red-500 mt-2">600+ MO_* 环境变量散落在 40+ 文件</p>
+</div>
+</div>
+<div class="space-y-2">
+<p class="text-xs uppercase tracking-wider text-slate-400 font-semibold">After — 聚焦域</p>
+<div class="rounded-lg border border-slate-200 bg-white p-3 space-y-1">
+<div class="mass-impl">agent-config.ts<br><span class="text-slate-400 font-normal">Agent 运行时配置</span></div>
+<div class="mass-impl">channel-config.ts<br><span class="text-slate-400 font-normal">渠道配置聚合</span></div>
+<div class="mass-impl">model-config.ts<br><span class="text-slate-400 font-normal">模型提供商配置</span></div>
+<div class="mass-impl">infra-config.ts<br><span class="text-slate-400 font-normal">基础设施配置</span></div>
+<p class="text-xs text-emerald-600 mt-2">4 个深层模块，每个 ~15 个导出</p>
+</div>
+</div>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Problem</p>
+<p class="text-sm text-slate-700">barrel 文件 re-export 40+ 子类型文件。600+ MO_* 环境变量无统一读取验证层。理解一个配置项需跳转 3-4 个文件。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Solution</p>
+<p class="text-sm text-slate-700">按领域聚合为 4 个深层配置模块，每个内聚读取+验证+类型。barrel 缩减为 4 行 re-export。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Wins</p>
+<ul class="text-sm text-slate-700 space-y-0.5">
+<li>• <strong>locality</strong>：配置类型与读取同模块</li>
+<li>• <strong>leverage</strong>：统一验证层，一处修改全局生效</li>
+<li>• 删除 35+ 浅层类型文件</li>
+</ul>
+</div>
+</article>
+
+<!-- C3: Plugin Adapter Stack -->
+<article class="card space-y-5">
+<div class="flex items-center gap-3 flex-wrap">
+<h2 class="text-xl font-serif font-bold">3. 压平插件三层适配器</h2>
+<span class="badge-worth text-xs px-2 py-1 rounded-full font-semibold">Worth exploring</span>
+<span class="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200">adapter</span>
+</div>
+<div class="font-mono text-xs text-slate-500 bg-slate-50 p-2 rounded">src/plugins/types.ts · hook-runtime.ts · src/agents/agent-tools.ts · packages/plugin-sdk/</div>
+<div class="grid grid-cols-2 gap-6">
+<div class="space-y-2">
+<p class="text-xs uppercase tracking-wider text-slate-400 font-semibold">Before — 三层适配</p>
+<div class="rounded-lg border border-slate-200 bg-white p-3">
+<pre class="mermaid">
+flowchart TD
+    REG["registerPlugin"] --> API["OpenClawPluginApi 70+方法"]
+    API --> PA["PluginApi"]
+    PA --> RPA["RuntimePluginApi"]
+    RPA --> AT["agent-tools 动态注册"]
+    style API fill:#dc2626,stroke:#991b1b,color:#fff
+    style PA fill:#f59e0b,stroke:#d97706,color:#fff
+    style RPA fill:#f59e0b,stroke:#d97706,color:#fff
+</pre>
+</div>
+</div>
+<div class="space-y-2">
+<p class="text-xs uppercase tracking-wider text-slate-400 font-semibold">After — 两层适配</p>
+<div class="rounded-lg border border-slate-200 bg-white p-3">
+<pre class="mermaid">
+flowchart TD
+    REG2["registerPlugin"] --> API2["PluginApi ~30方法"]
+    API2 --> EX2["执行"]
+    style API2 fill:#0f172a,stroke:#0f172a,color:#fff
+</pre>
+</div>
+<p class="text-xs text-slate-500">合并 PluginApi + RuntimePluginApi，删除冗余层</p>
+</div>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Problem</p>
+<p class="text-sm text-slate-700">插件注册经过三层适配器，两层 adapter 只是转发调用，无额外隔离价值。agent-tools.ts 运行时动态注入工具增加隐式耦合。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Solution</p>
+<p class="text-sm text-slate-700">合并 PluginApi 和 RuntimePluginApi 为一层。工具注册改为声明式配置，而非运行时动态注入。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Wins</p>
+<ul class="text-sm text-slate-700 space-y-0.5">
+<li>• <strong>leverage</strong>：一层适配 = 真正的接缝</li>
+<li>• 工具注册可静态分析</li>
+<li>• 测试插件只需 mock 一层</li>
+</ul>
+</div>
+</article>
+
+<!-- C4: Gateway Decomposition -->
+<article class="card space-y-5">
+<div class="flex items-center gap-3 flex-wrap">
+<h2 class="text-xl font-serif font-bold">4. 分解 Gateway 命名空间</h2>
+<span class="badge-worth text-xs px-2 py-1 rounded-full font-semibold">Worth exploring</span>
+<span class="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200">in-process</span>
+</div>
+<div class="font-mono text-xs text-slate-500 bg-slate-50 p-2 rounded">src/gateway/ (749 文件) · local-request-context.ts · session-manager.ts</div>
+<div class="grid grid-cols-2 gap-6">
+<div class="space-y-2">
+<p class="text-xs uppercase tracking-wider text-slate-400 font-semibold">Before — 单体命名空间</p>
+<div class="rounded-lg border border-slate-200 bg-white p-3">
+<div class="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
+<p class="text-sm font-semibold text-red-700">gateway/ — 749 文件</p>
+<p class="text-xs text-red-500 mt-1">HTTP 路由 · WebSocket · 会话管理 · 请求上下文 · 消息投递 · 认证 · 限流</p>
+<p class="text-xs text-red-400 mt-2">"Don't touch" zone — 任何修改都有副作用</p>
+</div>
+</div>
+</div>
+<div class="space-y-2">
+<p class="text-xs uppercase tracking-wider text-slate-400 font-semibold">After — 聚焦子模块</p>
+<div class="rounded-lg border border-slate-200 bg-white p-3 space-y-1">
+<div class="bg-slate-800 text-white text-xs px-3 py-2 rounded font-semibold">http-router/</div>
+<div class="bg-slate-800 text-white text-xs px-3 py-2 rounded font-semibold">ws-transport/</div>
+<div class="bg-slate-800 text-white text-xs px-3 py-2 rounded font-semibold">session-lifecycle/</div>
+<div class="bg-slate-800 text-white text-xs px-3 py-2 rounded font-semibold">request-scope/</div>
+<div class="bg-slate-800 text-white text-xs px-3 py-2 rounded font-semibold">delivery-pipeline/</div>
+</div>
+</div>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Problem</p>
+<p class="text-sm text-slate-700">gateway/ 是项目最大命名空间（749 文件），HTTP、WebSocket、会话、投递等职责混杂。session-manager.ts 有 20+ 内部依赖。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Solution</p>
+<p class="text-sm text-slate-700">按职责拆分为 5 个子模块，每个有独立接口和测试。通过 request-scope 统一连接。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Wins</p>
+<ul class="text-sm text-slate-700 space-y-0.5">
+<li>• <strong>locality</strong>：修改 WebSocket 不影响 HTTP</li>
+<li>• 每个子模块可独立测试</li>
+<li>• 新贡献者聚焦单一子模块</li>
+</ul>
+</div>
+</article>
+
+<!-- C5: Tool Registration Isolation -->
+<article class="card space-y-5">
+<div class="flex items-center gap-3 flex-wrap">
+<h2 class="text-xl font-serif font-bold">5. 隔离工具注册的副作用</h2>
+<span class="badge-worth text-xs px-2 py-1 rounded-full font-semibold">Worth exploring</span>
+<span class="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200">ports &amp; adapters</span>
+</div>
+<div class="font-mono text-xs text-slate-500 bg-slate-50 p-2 rounded">src/agents/agent-tools.ts · src/plugins/tools.ts · extensions/*/tools.ts</div>
+<div class="grid grid-cols-2 gap-6">
+<div class="space-y-2">
+<p class="text-xs uppercase tracking-wider text-slate-400 font-semibold">Before — 直接副作用</p>
+<div class="rounded-lg border border-slate-200 bg-white p-3">
+<pre class="mermaid">
+flowchart LR
+    AT["agent-tools.ts"] --> T1["read_file 直接import fs"]
+    AT --> T2["execute_command 直接import child_process"]
+    AT --> T3["web_fetch 直接import http"]
+    style T1 fill:#dc2626,stroke:#991b1b,color:#fff
+    style T2 fill:#dc2626,stroke:#991b1b,color:#fff
+    style T3 fill:#dc2626,stroke:#991b1b,color:#fff
+</pre>
+</div>
+</div>
+<div class="space-y-2">
+<p class="text-xs uppercase tracking-wider text-slate-400 font-semibold">After — 端口/适配器</p>
+<div class="rounded-lg border border-slate-200 bg-white p-3">
+<pre class="mermaid">
+flowchart LR
+    AT2["agent-tools.ts"] --> P["FileSystemPort"]
+    AT2 --> P2["ProcessPort"]
+    AT2 --> P3["NetworkPort"]
+    P --> A1["NodeFsAdapter"]
+    P2 --> A2["ChildProcessAdapter"]
+    P3 --> A3["FetchAdapter"]
+    style P fill:#0f172a,stroke:#0f172a,color:#fff
+    style P2 fill:#0f172a,stroke:#0f172a,color:#fff
+    style P3 fill:#0f172a,stroke:#0f172a,color:#fff
+</pre>
+</div>
+</div>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Problem</p>
+<p class="text-sm text-slate-700">工具处理器直接导入 fs、child_process、http，产生隐式副作用。测试需 mock 整个系统调用链。沙箱策略与工具逻辑耦合。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Solution</p>
+<p class="text-sm text-slate-700">引入端口接口（FileSystemPort、ProcessPort、NetworkPort），工具依赖端口而非实现。生产注入真实适配器，测试注入 mock。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Wins</p>
+<ul class="text-sm text-slate-700 space-y-0.5">
+<li>• 测试工具只需 mock 端口接口</li>
+<li>• 沙箱策略与工具逻辑解耦</li>
+<li>• 两个适配器 = 真正的接缝</li>
+</ul>
+</div>
+</article>
+
+<!-- C6: Test Coverage -->
+<article class="card space-y-5">
+<div class="flex items-center gap-3 flex-wrap">
+<h2 class="text-xl font-serif font-bold">6. 补充核心模块测试覆盖</h2>
+<span class="badge-spec text-xs px-2 py-1 rounded-full font-semibold">Speculative</span>
+<span class="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200">mock</span>
+</div>
+<div class="font-mono text-xs text-slate-500 bg-slate-50 p-2 rounded">src/channels/ · src/config/ · src/gateway/ · src/plugins/ · src/routing/</div>
+<div class="rounded-lg border border-slate-200 bg-white p-3">
+<p class="text-xs uppercase tracking-wider text-slate-400 font-semibold mb-2">测试覆盖热力图</p>
+<div class="grid grid-cols-5 gap-2 text-xs">
+<div class="bg-emerald-100 border border-emerald-300 rounded p-2 text-center"><p class="font-semibold text-emerald-700">agents/</p><p class="text-emerald-600">18 tests</p></div>
+<div class="bg-emerald-100 border border-emerald-300 rounded p-2 text-center"><p class="font-semibold text-emerald-700">llm/</p><p class="text-emerald-600">8 tests</p></div>
+<div class="bg-emerald-100 border border-emerald-300 rounded p-2 text-center"><p class="font-semibold text-emerald-700">cli/</p><p class="text-emerald-600">15 tests</p></div>
+<div class="bg-amber-100 border border-amber-300 rounded p-2 text-center"><p class="font-semibold text-amber-700">infra/</p><p class="text-amber-600">12 tests</p></div>
+<div class="bg-amber-100 border border-amber-300 rounded p-2 text-center"><p class="font-semibold text-amber-700">channels/</p><p class="text-amber-600">8 tests</p></div>
+<div class="bg-red-100 border border-red-300 rounded p-2 text-center"><p class="font-semibold text-red-700">config/</p><p class="text-red-600">1 test</p></div>
+<div class="bg-red-100 border border-red-300 rounded p-2 text-center"><p class="font-semibold text-red-700">gateway/</p><p class="text-red-600">5 tests</p></div>
+<div class="bg-red-100 border border-red-300 rounded p-2 text-center"><p class="font-semibold text-red-700">plugins/</p><p class="text-red-600">2 tests</p></div>
+<div class="bg-red-100 border border-red-300 rounded p-2 text-center"><p class="font-semibold text-red-700">routing/</p><p class="text-red-600">0 tests</p></div>
+<div class="bg-red-100 border border-red-300 rounded p-2 text-center"><p class="font-semibold text-red-700">sessions/</p><p class="text-red-600">0 tests</p></div>
+</div>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Problem</p>
+<p class="text-sm text-slate-700">config/（399 文件）仅 1 个测试文件，routing/ 和 sessions/ 无测试。这些模块承载核心逻辑，但测试需启动整个系统。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Solution</p>
+<p class="text-sm text-slate-700">先深化模块接口（候选 1-4），再为每个深层模块补充单元测试。优先级：config > routing > sessions > gateway。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Wins</p>
+<ul class="text-sm text-slate-700 space-y-0.5">
+<li>• <strong>locality</strong>：bug 在单元测试中被捕获</li>
+<li>• 回归测试保护重构</li>
+<li>• 文档化模块行为</li>
+</ul>
+</div>
+</article>
+
+<!-- C7: session-manager fan-out -->
+<article class="card space-y-5">
+<div class="flex items-center gap-3 flex-wrap">
+<h2 class="text-xl font-serif font-bold">7. 收敛 session-manager 扇出</h2>
+<span class="badge-spec text-xs px-2 py-1 rounded-full font-semibold">Speculative</span>
+<span class="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200">in-process</span>
+</div>
+<div class="font-mono text-xs text-slate-500 bg-slate-50 p-2 rounded">src/gateway/session-manager.ts · src/sessions/ · src/routing/session-key.ts</div>
+<div class="rounded-lg border border-slate-200 bg-white p-3">
+<pre class="mermaid">
+flowchart TD
+    SM["session-manager.ts"] --> C1["config"]
+    SM --> C2["channels"]
+    SM --> C3["routing"]
+    SM --> C4["plugins"]
+    SM --> C5["agents"]
+    SM --> C6["infra"]
+    SM --> C7["secrets"]
+    SM --> C8["sessions"]
+    SM --> C9["logging"]
+    SM --> C10["hooks"]
+    style SM fill:#dc2626,stroke:#991b1b,color:#fff
+</pre>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Problem</p>
+<p class="text-sm text-slate-700">session-manager.ts 依赖 20+ 内部模块，是 gateway 中扇出最高的文件。同时管理会话生命周期、消息路由、插件钩子、密钥解析。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Solution</p>
+<p class="text-sm text-slate-700">提取 SessionLifecycle、SessionRouting、SessionHooks 三个子模块，session-manager 变为薄协调层。</p>
+</div>
+<div class="space-y-1">
+<p class="font-semibold text-sm">Wins</p>
+<ul class="text-sm text-slate-700 space-y-0.5">
+<li>• <strong>locality</strong>：修改路由不影响生命周期</li>
+<li>• 扇出从 20+ 降至 5-8</li>
+<li>• 每个子模块可独立测试</li>
+</ul>
+</div>
+</article>
+
+</section>
+
+<!-- Top Recommendation -->
+<section id="top-recommendation" class="space-y-4">
+<h2 class="text-2xl font-serif font-bold">首选推荐</h2>
+<div class="card border-2 border-emerald-500 bg-emerald-50/30 space-y-3">
+<div class="flex items-center gap-3">
+<span class="badge-strong text-xs px-2 py-1 rounded-full font-semibold">Strong</span>
+<h3 class="text-lg font-bold">拆解 agent-command 巨型浅层模块</h3>
+</div>
+<p class="text-sm text-slate-700">这是项目中最大的浅层模块（90KB），也是所有其他模块的核心编排入口。深化它将产生最大的杠杆效应——其他 6 个候选的收益部分依赖于此模块的拆分。建议首先执行。</p>
+<p class="text-xs text-slate-500">→ <a href="#candidates" class="text-emerald-600 underline">回到候选卡片</a></p>
+</div>
+</section>
+
+</main>
+</body>
+</html>

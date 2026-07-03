@@ -1,0 +1,15 @@
+{
+  "name": "@mo/nvidia-provider",
+  "version": "2026.6.11",
+  "private": true,
+  "description": "OpenClaw NVIDIA provider plugin",
+  "type": "module",
+  "devDependencies": {
+    "@mo/plugin-sdk": "workspace:*"
+  },
+  "mo": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
