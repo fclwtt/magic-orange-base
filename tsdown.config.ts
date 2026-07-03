@@ -158,6 +158,10 @@ function nodeWorkspacePackageBuildConfig(config: UserConfig): UserConfig {
     platform: "node",
     sourcemap: OUTPUT_SOURCE_MAPS,
     inputOptions: buildInputOptions,
+    deps: {
+      alwaysBundle: shouldAlwaysBundleDependency,
+      neverBundle: shouldNeverBundleDependency,
+    },
   };
 }
 
