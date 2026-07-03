@@ -9,7 +9,7 @@ import {
   extractAssistantVisibleText,
   extractFirstTextBlock,
 } from "../../shared/chat-message-content.js";
-import { isTranscriptOnlyOpenClawAssistantModel } from "../../shared/transcript-only-mo-assistant.js";
+import { isTranscriptOnlyOpenClawAssistantModel } from "../../shared/transcript-only-openclaw-assistant.js";
 import type { OpenClawConfig } from "../types.mo.js";
 import {
   resolveDefaultSessionStorePath,

@@ -11,7 +11,7 @@ import {
 import { redactTranscriptMessage } from "../../agents/transcript-redact.js";
 import type { OpenClawConfig } from "../../config/types.mo.js";
 import { redactSecrets } from "../../logging/redact.js";
-import { isTranscriptOnlyOpenClawAssistantMessage } from "../../shared/transcript-only-mo-assistant.js";
+import { isTranscriptOnlyOpenClawAssistantMessage } from "../../shared/transcript-only-openclaw-assistant.js";
 import { createSessionTranscriptHeader } from "./transcript-header.js";
 import {
   appendJsonlEntry,

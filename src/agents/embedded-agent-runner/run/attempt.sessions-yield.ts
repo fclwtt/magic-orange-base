@@ -1,7 +1,7 @@
 /**
  * Handles sessions-yield interruption, persistence, and artifact cleanup.
  */
-import { isTranscriptOnlyOpenClawAssistantMessage } from "../../../shared/transcript-only-mo-assistant.js";
+import { isTranscriptOnlyOpenClawAssistantMessage } from "../../../shared/transcript-only-openclaw-assistant.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { log } from "../logger.js";
 import { resolveEmbeddedAbortSettleTimeoutMs } from "./attempt.abort-settle-timeout.js";

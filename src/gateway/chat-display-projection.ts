@@ -19,7 +19,7 @@ import {
   parseAssistantTextSignature,
   resolveAssistantMessagePhase,
 } from "../shared/chat-message-content.js";
-import { isOpenClawDeliveryMirrorAssistantMessage } from "../shared/transcript-only-mo-assistant.js";
+import { isOpenClawDeliveryMirrorAssistantMessage } from "../shared/transcript-only-openclaw-assistant.js";
 import { stripInlineDirectiveTagsForDisplay } from "../utils/directive-tags.js";
 import { stripEnvelopeFromMessages } from "./chat-sanitize.js";
 import { isSuppressedControlReplyText } from "./control-reply-text.js";

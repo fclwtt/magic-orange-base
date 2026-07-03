@@ -16,7 +16,7 @@ import {
 } from "../../../config/sessions/transcript-write-context.js";
 import { toErrorObject } from "../../../infra/errors.js";
 import { resolveGlobalSingleton } from "../../../shared/global-singleton.js";
-import { isTranscriptOnlyOpenClawAssistantMessage } from "../../../shared/transcript-only-mo-assistant.js";
+import { isTranscriptOnlyOpenClawAssistantMessage } from "../../../shared/transcript-only-openclaw-assistant.js";
 import { isSessionWriteLockAcquireError } from "../../session-write-lock-error.js";
 import type { acquireSessionWriteLock } from "../../session-write-lock.js";
 import type {

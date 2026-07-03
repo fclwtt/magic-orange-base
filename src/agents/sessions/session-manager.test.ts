@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
-import { isTranscriptOnlyOpenClawAssistantMessage } from "../../shared/transcript-only-mo-assistant.js";
+import { isTranscriptOnlyOpenClawAssistantMessage } from "../../shared/transcript-only-openclaw-assistant.js";
 import { prepareSessionManagerForRun } from "../embedded-agent-runner/session-manager-init.js";
 import { repairSessionFileIfNeeded } from "../session-file-repair.js";
 import {
