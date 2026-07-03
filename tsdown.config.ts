@@ -104,6 +104,12 @@ function buildInputOptions(options: InputOptionsArg): InputOptionsReturn {
     ) {
       return true;
     }
+    // Suppress MISSING_EXPORT errors for ipaddr.js — its declare-module +
+    // export= format is misread by rolldown's dts plugin but works fine at
+    // runtime because the package is externalized.
+    if (log.code === "MISSING_EXPORT" && normalizedLogHaystack(log).includes("ipaddr.js")) {
+      return true;
+    }
     if (log.code !== "EVAL") {
       return false;
     }
