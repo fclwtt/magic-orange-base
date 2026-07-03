@@ -113,6 +113,12 @@ function buildInputOptions(options: InputOptionsArg): InputOptionsReturn {
 
   return {
     ...options,
+    resolve: {
+      extensionAlias: {
+        ".js": [".ts", ".tsx", ".js"],
+        ".mjs": [".mts", ".mjs"],
+      },
+    },
     external(id: string, parentId: string | undefined, isResolved: boolean) {
       return (
         shouldNeverBundleDependency(id) ||
@@ -214,16 +220,25 @@ function shouldNeverBundleDependency(id: string): boolean {
   });
 }
 
+/** Normalize @mo/* and mo/* package ids to @openclaw/* and openclaw/* equivalents. */
+function normalizePackageId(id: string): string {
+  if (id.startsWith("@mo/")) return "@openclaw/" + id.slice(4);
+  if (id === "mo") return "openclaw";
+  if (id.startsWith("mo/")) return "openclaw/" + id.slice(3);
+  return id;
+}
+
 function shouldAlwaysBundleDependency(id: string): boolean {
+  const n = normalizePackageId(id);
   return (
-    id === "@openclaw/fs-safe" ||
-    id.startsWith("@openclaw/fs-safe/") ||
-    id === "@openclaw/normalization-core" ||
-    id.startsWith("@openclaw/normalization-core/") ||
-    id === "@openclaw/media-core" ||
-    id.startsWith("@openclaw/media-core/") ||
-    id === "@openclaw/acp-core" ||
-    id.startsWith("@openclaw/acp-core/") ||
+    n === "@openclaw/fs-safe" ||
+    n.startsWith("@openclaw/fs-safe/") ||
+    n === "@openclaw/normalization-core" ||
+    n.startsWith("@openclaw/normalization-core/") ||
+    n === "@openclaw/media-core" ||
+    n.startsWith("@openclaw/media-core/") ||
+    n === "@openclaw/acp-core" ||
+    n.startsWith("@openclaw/acp-core/") ||
     id === "zod" ||
     id.startsWith("zod/")
   );
@@ -560,12 +575,13 @@ function buildLlmRuntimeDistEntries(): Record<string, string> {
 }
 
 function shouldExternalizeAgentCoreDependency(id: string): boolean {
+  const n = normalizePackageId(id);
   return (
-    id === "@openclaw/llm-core" ||
-    id.startsWith("@openclaw/llm-core/") ||
+    n === "@openclaw/llm-core" ||
+    n.startsWith("@openclaw/llm-core/") ||
     id === "ignore" ||
-    id === "openclaw" ||
-    id.startsWith("openclaw/") ||
+    n === "openclaw" ||
+    n.startsWith("openclaw/") ||
     id === "typebox" ||
     id.startsWith("typebox/") ||
     id === "yaml" ||
@@ -578,11 +594,12 @@ function shouldExternalizeGatewayProtocolDependency(id: string): boolean {
 }
 
 function shouldExternalizeGatewayClientDependency(id: string): boolean {
+  const n = normalizePackageId(id);
   return (
     id === "ws" ||
     id.startsWith("ws/") ||
-    id === "@openclaw/gateway-protocol" ||
-    id.startsWith("@openclaw/gateway-protocol/")
+    n === "@openclaw/gateway-protocol" ||
+    n.startsWith("@openclaw/gateway-protocol/")
   );
 }
 
@@ -591,7 +608,8 @@ function shouldExternalizeNetPolicyDependency(id: string): boolean {
 }
 
 function shouldExternalizeSpeechCoreDependency(id: string): boolean {
-  return id === "openclaw" || id.startsWith("openclaw/");
+  const n = normalizePackageId(id);
+  return n === "openclaw" || n.startsWith("openclaw/");
 }
 
 function shouldExternalizeLlmCoreDependency(id: string): boolean {
@@ -599,7 +617,8 @@ function shouldExternalizeLlmCoreDependency(id: string): boolean {
 }
 
 function shouldExternalizeLlmRuntimeDependency(id: string): boolean {
-  return id === "@openclaw/llm-core" || id.startsWith("@openclaw/llm-core/");
+  const n = normalizePackageId(id);
+  return n === "@openclaw/llm-core" || n.startsWith("@openclaw/llm-core/");
 }
 
 function shouldExternalizeMarkdownCoreDependency(id: string): boolean {
