@@ -322,7 +322,7 @@ function buildCoreDistEntries(): Record<string, string> {
     "plugins/runtime/index": "src/plugins/runtime/index.ts",
     "llm-slug-generator": "src/hooks/llm-slug-generator.ts",
     "mcp/plugin-tools-serve": "src/mcp/plugin-tools-serve.ts",
-    "mcp/openclaw-tools-serve": "src/mcp/openclaw-tools-serve.ts",
+    "mcp/mo-tools-serve": "src/mcp/mo-tools-serve.ts",
   };
 }
 
