@@ -1,7 +1,7 @@
 # OpenClaw — 参考手册
 
 > 生成时间: 2026-07-01
-> 路径: E:\aiproject\openclaw
+> 路径: https://github.com/openclaw/openclaw
 > 最后更新: 2026-07-01
 > 索引位置: schemas/references/openclaw.md
 
@@ -19,7 +19,7 @@
 ## 目录结构
 
 ```
-E:\aiproject\openclaw\
+https://github.com/openclaw/openclaw
 ├── src/                    # 核心运行时源码
 │   ├── agents/             # Agent 运行时：embedded-agent-runner、sessions、tools、hooks
 │   ├── gateway/            # Gateway 控制平面：HTTP/WS 服务、认证、配置

@@ -12,7 +12,7 @@
 
 ### 第一步：项目概览探索
 
-使用 `list_dir` 探索项目根目录，识别：
+使用 `find` / `ls` 探索项目根目录，识别：
 - 项目名称（从 package.json、README.md、pyproject.toml 等）
 - 技术栈（从配置文件推断）
 - 项目类型（单体、monorepo、库、应用等）
@@ -30,7 +30,7 @@
   - 与其他项目的关系（依赖、被依赖）
 
 #### 维度 2：目录结构
-- **调查方法**：`list_dir` 根目录，然后对关键子目录递归探索
+- **调查方法**：`ls` 根目录，然后对关键子目录递归探索
 - **提取内容**：
   - 顶层目录树（2-3 层）
   - 每个目录的职责（从命名和文件内容推断）
@@ -192,7 +192,7 @@
 
 参考手册保存到 `<当前项目根目录>/schemas/references/<project-name>.md`
 
-例如：`E:\aiproject\openclaw-loop-engineering\schemas\references\new-project.md`
+例如：`https://github.com/openclaw/openclaw`
 
 ### 第五步：更新索引
 

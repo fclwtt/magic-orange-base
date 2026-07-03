@@ -79,5 +79,17 @@ magic-orange-base/
 - `schemas/rules/` — 知识查阅和回补规则
 
 > 任何技能在需要深入理解项目时，应优先查阅 `schemas/` 下的相关文档，而非直接从代码推断。
+> 当工作涉及参考项目查阅或新手册生成时，按 `schemas/rules/` 中的流程操作。
 >
 > 避免使用的同义词：不要在 glossary 中使用"组件"、"服务"、"API"等模糊术语替代上述精确定义的概念。
+### Workflow rules
+
+当需要查阅参考项目手册时，先读 `schemas/rules/query.md` 了解查阅流程，按"先查手册，后查代码"原则操作。
+
+当需要生成新的参考手册时，先读 `schemas/rules/gen.md` 了解 7 维度调查方法和统一格式，在新项目源码上按维度逐一调查后生成。
+
+查阅过程中的新发现，按 `schemas/rules/ingest.md` 规则及时回补，形成知识复利。
+
+### Architecture Decision Records (ADRs)
+
+架构决策记录位于 `docs/adr/` 目录。当需要进行架构决策时，先查阅 ADRs 了解已做的决策，避免重复讨论；当做出新决策时，创建新的 ADR 文件记录。

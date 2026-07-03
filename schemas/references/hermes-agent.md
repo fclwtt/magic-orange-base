@@ -1,7 +1,7 @@
 # Hermes Agent — 参考手册
 
 > 生成时间: 2026-07-01
-> 路径: E:\aiproject\hermes-agent
+> 路径: https://github.com/NousResearch/hermes-agent
 > 最后更新: 2026-07-01
 > 索引位置: schemas/references/hermes-agent.md
 
@@ -18,7 +18,7 @@
 ## 目录结构
 
 ```
-E:\aiproject\hermes-agent\
+https://github.com/NousResearch/hermes-agent
 ├── agent/                      # Agent 核心
 │   ├── conversation_loop.py    # 对话循环（主循环）
 │   ├── background_review.py    # ★ 后台自我审查（学习闭环核心）

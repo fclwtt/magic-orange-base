@@ -7,7 +7,6 @@
 | 项目 | 手册路径 | 概要 | 最后更新 |
 |------|----------|------|----------|
 | **OpenClaw** | `schemas/references/openclaw.md` | 核心骨架：Agent 循环引擎、插件系统、多渠道网关 | 2026-07-01 |
-| **OpenClaw Disassembled** | `schemas/references/openclaw-disassembled.md` | 插件库：135 个插件、Plugin SDK、插件开发规则 | 2026-07-01 |
 | **Hermes Agent** | `schemas/references/hermes-agent.md` | 参考项目：后台自我审查循环、技能自动创建、学习闭环 | 2026-07-01 |
 
 ## 查阅流程
@@ -21,8 +20,8 @@
 
 | 规则 | 路径 | 用途 |
 |------|------|------|
-| 查阅规则 | `schemas/schema-query.md` | 如何查阅参考手册（先查手册，后查代码） |
-| 回补规则 | `schemas/schema-ingest.md` | 如何回补新发现（知识复利） |
+| 查阅规则 | `schemas/rules/query.md` | 如何查阅参考手册（先查手册，后查代码） |
+| 回补规则 | `schemas/rules/ingest.md` | 如何回补新发现（知识复利） |
 
 **注意**：规则文件是按需读取的，不是一开始就必须读取。只有在具体场景需要时才读取。
 
@@ -30,13 +29,14 @@
 
 为新项目生成参考手册：
 ```
-/schema-gen E:\aiproject\new-project
+参考 `schemas/rules/gen.md` 了解生成方法。
 ```
 
 生成的手册会自动添加到本索引中。
 
 ## 知识库统计
 
-- 参考手册数量：3
-- 总项目数：3
+- 参考手册数量：2
+- 总项目数：2
 - 最后更新：2026-07-01
+4. **回补发现** — 将新发现回补到参考手册中（见 `schemas/rules/ingest.md`）
