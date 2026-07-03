@@ -1,0 +1,36 @@
+name: Build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build with increased memory
+        run: pnpm build
+        env:
+          NODE_OPTIONS: "--max-old-space-size=12288"
+          MO_TSDOWN_MAX_OLD_SPACE_MB: "12288"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            dist/
+            dist-runtime/
+          retention-days: 7
