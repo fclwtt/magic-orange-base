@@ -69,6 +69,8 @@ const SKIP_DTS_STEPS = new Set([
   "write-plugin-sdk-entry-dts",
   "check-plugin-sdk-exports",
   "ui:build",
+  "write-cli-startup-metadata",
+  "write-cli-compat",
 ]);
 
 const PNPM_STEP_NODE_FALLBACKS = new Map([
