@@ -6,33 +6,27 @@
     "dist"
   ],
   "type": "module",
-  "main": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
+  "main": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./capability-model-ref": {
-      "types": "./dist/capability-model-ref.d.mts",
-      "import": "./dist/capability-model-ref.mjs",
-      "default": "./dist/capability-model-ref.mjs"
+      "import": "./src/capability-model-ref.ts",
+      "default": "./src/capability-model-ref.ts"
     },
     "./catalog": {
-      "types": "./dist/catalog.d.mts",
-      "import": "./dist/catalog.mjs",
-      "default": "./dist/catalog.mjs"
+      "import": "./src/catalog.ts",
+      "default": "./src/catalog.ts"
     },
     "./model-ref": {
-      "types": "./dist/model-ref.d.mts",
-      "import": "./dist/model-ref.mjs",
-      "default": "./dist/model-ref.mjs"
+      "import": "./src/model-ref.ts",
+      "default": "./src/model-ref.ts"
     },
     "./normalization": {
-      "types": "./dist/normalization.d.mts",
-      "import": "./dist/normalization.mjs",
-      "default": "./dist/normalization.mjs"
+      "import": "./src/normalization.ts",
+      "default": "./src/normalization.ts"
     }
   },
   "scripts": {

@@ -6,23 +6,19 @@
     "dist"
   ],
   "type": "module",
-  "main": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
+  "main": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./api-registry": {
-      "types": "./dist/api-registry.d.mts",
-      "import": "./dist/api-registry.mjs",
-      "default": "./dist/api-registry.mjs"
+      "import": "./src/api-registry.ts",
+      "default": "./src/api-registry.ts"
     },
     "./stream": {
-      "types": "./dist/stream.d.mts",
-      "import": "./dist/stream.mjs",
-      "default": "./dist/stream.mjs"
+      "import": "./src/stream.ts",
+      "default": "./src/stream.ts"
     }
   },
   "dependencies": {

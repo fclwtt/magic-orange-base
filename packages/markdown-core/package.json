@@ -6,53 +6,43 @@
     "dist"
   ],
   "type": "module",
-  "main": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
+  "main": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./code-spans": {
-      "types": "./dist/code-spans.d.mts",
-      "import": "./dist/code-spans.mjs",
-      "default": "./dist/code-spans.mjs"
+      "import": "./src/code-spans.ts",
+      "default": "./src/code-spans.ts"
     },
     "./fences": {
-      "types": "./dist/fences.d.mts",
-      "import": "./dist/fences.mjs",
-      "default": "./dist/fences.mjs"
+      "import": "./src/fences.ts",
+      "default": "./src/fences.ts"
     },
     "./frontmatter": {
-      "types": "./dist/frontmatter.d.mts",
-      "import": "./dist/frontmatter.mjs",
-      "default": "./dist/frontmatter.mjs"
+      "import": "./src/frontmatter.ts",
+      "default": "./src/frontmatter.ts"
     },
     "./ir": {
-      "types": "./dist/ir.d.mts",
-      "import": "./dist/ir.mjs",
-      "default": "./dist/ir.mjs"
+      "import": "./src/ir.ts",
+      "default": "./src/ir.ts"
     },
     "./render": {
-      "types": "./dist/render.d.mts",
-      "import": "./dist/render.mjs",
-      "default": "./dist/render.mjs"
+      "import": "./src/render.ts",
+      "default": "./src/render.ts"
     },
     "./render-aware-chunking": {
-      "types": "./dist/render-aware-chunking.d.mts",
-      "import": "./dist/render-aware-chunking.mjs",
-      "default": "./dist/render-aware-chunking.mjs"
+      "import": "./src/render-aware-chunking.ts",
+      "default": "./src/render-aware-chunking.ts"
     },
     "./tables": {
-      "types": "./dist/tables.d.mts",
-      "import": "./dist/tables.mjs",
-      "default": "./dist/tables.mjs"
+      "import": "./src/tables.ts",
+      "default": "./src/tables.ts"
     },
     "./types": {
-      "types": "./dist/types.d.mts",
-      "import": "./dist/types.mjs",
-      "default": "./dist/types.mjs"
+      "import": "./src/types.ts",
+      "default": "./src/types.ts"
     }
   },
   "dependencies": {

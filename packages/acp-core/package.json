@@ -6,78 +6,63 @@
     "dist"
   ],
   "type": "module",
-  "main": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
+  "main": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./normalize-text": {
-      "types": "./dist/normalize-text.d.mts",
-      "import": "./dist/normalize-text.mjs",
-      "default": "./dist/normalize-text.mjs"
+      "import": "./src/normalize-text.ts",
+      "default": "./src/normalize-text.ts"
     },
     "./meta": {
-      "types": "./dist/meta.d.mts",
-      "import": "./dist/meta.mjs",
-      "default": "./dist/meta.mjs"
+      "import": "./src/meta.ts",
+      "default": "./src/meta.ts"
     },
     "./numeric-options": {
-      "types": "./dist/numeric-options.d.mts",
-      "import": "./dist/numeric-options.mjs",
-      "default": "./dist/numeric-options.mjs"
+      "import": "./src/numeric-options.ts",
+      "default": "./src/numeric-options.ts"
     },
     "./record-shared": {
-      "types": "./dist/record-shared.d.mts",
-      "import": "./dist/record-shared.mjs",
-      "default": "./dist/record-shared.mjs"
+      "import": "./src/record-shared.ts",
+      "default": "./src/record-shared.ts"
     },
     "./session": {
-      "types": "./dist/session.d.mts",
-      "import": "./dist/session.mjs",
-      "default": "./dist/session.mjs"
+      "import": "./src/session.ts",
+      "default": "./src/session.ts"
     },
     "./session-interaction-mode": {
-      "types": "./dist/session-interaction-mode.d.mts",
-      "import": "./dist/session-interaction-mode.mjs",
-      "default": "./dist/session-interaction-mode.mjs"
+      "import": "./src/session-interaction-mode.ts",
+      "default": "./src/session-interaction-mode.ts"
     },
     "./session-lineage-meta": {
-      "types": "./dist/session-lineage-meta.d.mts",
-      "import": "./dist/session-lineage-meta.mjs",
-      "default": "./dist/session-lineage-meta.mjs"
+      "import": "./src/session-lineage-meta.ts",
+      "default": "./src/session-lineage-meta.ts"
     },
     "./types": {
-      "types": "./dist/types.d.mts",
-      "import": "./dist/types.mjs",
-      "default": "./dist/types.mjs"
+      "import": "./src/types.ts",
+      "default": "./src/types.ts"
     },
     "./runtime/error-text": {
-      "types": "./dist/runtime/error-text.d.mts",
-      "import": "./dist/runtime/error-text.mjs",
-      "default": "./dist/runtime/error-text.mjs"
+      "import": "./src/runtime/error-text.ts",
+      "default": "./src/runtime/error-text.ts"
     },
     "./runtime/errors": {
-      "types": "./dist/runtime/errors.d.mts",
-      "import": "./dist/runtime/errors.mjs",
-      "default": "./dist/runtime/errors.mjs"
+      "import": "./src/runtime/errors.ts",
+      "default": "./src/runtime/errors.ts"
     },
     "./runtime/session-identifiers": {
-      "types": "./dist/runtime/session-identifiers.d.mts",
-      "import": "./dist/runtime/session-identifiers.mjs",
-      "default": "./dist/runtime/session-identifiers.mjs"
+      "import": "./src/runtime/session-identifiers.ts",
+      "default": "./src/runtime/session-identifiers.ts"
     },
     "./runtime/session-identity": {
-      "types": "./dist/runtime/session-identity.d.mts",
-      "import": "./dist/runtime/session-identity.mjs",
-      "default": "./dist/runtime/session-identity.mjs"
+      "import": "./src/runtime/session-identity.ts",
+      "default": "./src/runtime/session-identity.ts"
     },
     "./runtime/types": {
-      "types": "./dist/runtime/types.d.mts",
-      "import": "./dist/runtime/types.mjs",
-      "default": "./dist/runtime/types.mjs"
+      "import": "./src/runtime/types.ts",
+      "default": "./src/runtime/types.ts"
     }
   },
   "dependencies": {

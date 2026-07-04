@@ -6,33 +6,27 @@
     "dist"
   ],
   "type": "module",
-  "main": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
+  "main": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./types": {
-      "types": "./dist/types.d.mts",
-      "import": "./dist/types.mjs",
-      "default": "./dist/types.mjs"
+      "import": "./src/types.ts",
+      "default": "./src/types.ts"
     },
     "./diagnostics": {
-      "types": "./dist/utils/diagnostics.d.mts",
-      "import": "./dist/utils/diagnostics.mjs",
-      "default": "./dist/utils/diagnostics.mjs"
+      "import": "./src/utils/diagnostics.ts",
+      "default": "./src/utils/diagnostics.ts"
     },
     "./event-stream": {
-      "types": "./dist/utils/event-stream.d.mts",
-      "import": "./dist/utils/event-stream.mjs",
-      "default": "./dist/utils/event-stream.mjs"
+      "import": "./src/utils/event-stream.ts",
+      "default": "./src/utils/event-stream.ts"
     },
     "./validation": {
-      "types": "./dist/validation.d.mts",
-      "import": "./dist/validation.mjs",
-      "default": "./dist/validation.mjs"
+      "import": "./src/validation.ts",
+      "default": "./src/validation.ts"
     }
   },
   "dependencies": {

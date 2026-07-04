@@ -6,98 +6,79 @@
     "dist"
   ],
   "type": "module",
-  "main": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
+  "main": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./ansi": {
-      "types": "./dist/ansi.d.mts",
-      "import": "./dist/ansi.mjs",
-      "default": "./dist/ansi.mjs"
+      "import": "./src/ansi.ts",
+      "default": "./src/ansi.ts"
     },
     "./decorative-emoji": {
-      "types": "./dist/decorative-emoji.d.mts",
-      "import": "./dist/decorative-emoji.mjs",
-      "default": "./dist/decorative-emoji.mjs"
+      "import": "./src/decorative-emoji.ts",
+      "default": "./src/decorative-emoji.ts"
     },
     "./health-style": {
-      "types": "./dist/health-style.d.mts",
-      "import": "./dist/health-style.mjs",
-      "default": "./dist/health-style.mjs"
+      "import": "./src/health-style.ts",
+      "default": "./src/health-style.ts"
     },
     "./links": {
-      "types": "./dist/links.d.mts",
-      "import": "./dist/links.mjs",
-      "default": "./dist/links.mjs"
+      "import": "./src/links.ts",
+      "default": "./src/links.ts"
     },
     "./note": {
-      "types": "./dist/note.d.mts",
-      "import": "./dist/note.mjs",
-      "default": "./dist/note.mjs"
+      "import": "./src/note.ts",
+      "default": "./src/note.ts"
     },
     "./osc-progress": {
-      "types": "./dist/osc-progress.d.mts",
-      "import": "./dist/osc-progress.mjs",
-      "default": "./dist/osc-progress.mjs"
+      "import": "./src/osc-progress.ts",
+      "default": "./src/osc-progress.ts"
     },
     "./palette": {
-      "types": "./dist/palette.d.mts",
-      "import": "./dist/palette.mjs",
-      "default": "./dist/palette.mjs"
+      "import": "./src/palette.ts",
+      "default": "./src/palette.ts"
     },
     "./progress-line": {
-      "types": "./dist/progress-line.d.mts",
-      "import": "./dist/progress-line.mjs",
-      "default": "./dist/progress-line.mjs"
+      "import": "./src/progress-line.ts",
+      "default": "./src/progress-line.ts"
     },
     "./prompt-select-styled": {
-      "types": "./dist/prompt-select-styled.d.mts",
-      "import": "./dist/prompt-select-styled.mjs",
-      "default": "./dist/prompt-select-styled.mjs"
+      "import": "./src/prompt-select-styled.ts",
+      "default": "./src/prompt-select-styled.ts"
     },
     "./prompt-select-styled-params": {
-      "types": "./dist/prompt-select-styled-params.d.mts",
-      "import": "./dist/prompt-select-styled-params.mjs",
-      "default": "./dist/prompt-select-styled-params.mjs"
+      "import": "./src/prompt-select-styled-params.ts",
+      "default": "./src/prompt-select-styled-params.ts"
     },
     "./prompt-style": {
-      "types": "./dist/prompt-style.d.mts",
-      "import": "./dist/prompt-style.mjs",
-      "default": "./dist/prompt-style.mjs"
+      "import": "./src/prompt-style.ts",
+      "default": "./src/prompt-style.ts"
     },
     "./restore": {
-      "types": "./dist/restore.d.mts",
-      "import": "./dist/restore.mjs",
-      "default": "./dist/restore.mjs"
+      "import": "./src/restore.ts",
+      "default": "./src/restore.ts"
     },
     "./safe-text": {
-      "types": "./dist/safe-text.d.mts",
-      "import": "./dist/safe-text.mjs",
-      "default": "./dist/safe-text.mjs"
+      "import": "./src/safe-text.ts",
+      "default": "./src/safe-text.ts"
     },
     "./stream-writer": {
-      "types": "./dist/stream-writer.d.mts",
-      "import": "./dist/stream-writer.mjs",
-      "default": "./dist/stream-writer.mjs"
+      "import": "./src/stream-writer.ts",
+      "default": "./src/stream-writer.ts"
     },
     "./table": {
-      "types": "./dist/table.d.mts",
-      "import": "./dist/table.mjs",
-      "default": "./dist/table.mjs"
+      "import": "./src/table.ts",
+      "default": "./src/table.ts"
     },
     "./terminal-link": {
-      "types": "./dist/terminal-link.d.mts",
-      "import": "./dist/terminal-link.mjs",
-      "default": "./dist/terminal-link.mjs"
+      "import": "./src/terminal-link.ts",
+      "default": "./src/terminal-link.ts"
     },
     "./theme": {
-      "types": "./dist/theme.d.mts",
-      "import": "./dist/theme.mjs",
-      "default": "./dist/theme.mjs"
+      "import": "./src/theme.ts",
+      "default": "./src/theme.ts"
     }
   },
   "dependencies": {

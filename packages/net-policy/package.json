@@ -6,33 +6,27 @@
     "dist"
   ],
   "type": "module",
-  "main": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
+  "main": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./ip": {
-      "types": "./dist/ip.d.mts",
-      "import": "./dist/ip.mjs",
-      "default": "./dist/ip.mjs"
+      "import": "./src/ip.ts",
+      "default": "./src/ip.ts"
     },
     "./ipv4": {
-      "types": "./dist/ipv4.d.mts",
-      "import": "./dist/ipv4.mjs",
-      "default": "./dist/ipv4.mjs"
+      "import": "./src/ipv4.ts",
+      "default": "./src/ipv4.ts"
     },
     "./redact-sensitive-url": {
-      "types": "./dist/redact-sensitive-url.d.mts",
-      "import": "./dist/redact-sensitive-url.mjs",
-      "default": "./dist/redact-sensitive-url.mjs"
+      "import": "./src/redact-sensitive-url.ts",
+      "default": "./src/redact-sensitive-url.ts"
     },
     "./url-userinfo": {
-      "types": "./dist/url-userinfo.d.mts",
-      "import": "./dist/url-userinfo.mjs",
-      "default": "./dist/url-userinfo.mjs"
+      "import": "./src/url-userinfo.ts",
+      "default": "./src/url-userinfo.ts"
     }
   },
   "scripts": {

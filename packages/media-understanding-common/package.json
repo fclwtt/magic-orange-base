@@ -6,63 +6,51 @@
     "dist"
   ],
   "type": "module",
-  "main": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
+  "main": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./active-model": {
-      "types": "./dist/active-model.d.mts",
-      "import": "./dist/active-model.mjs",
-      "default": "./dist/active-model.mjs"
+      "import": "./src/active-model.ts",
+      "default": "./src/active-model.ts"
     },
     "./defaults": {
-      "types": "./dist/defaults.d.mts",
-      "import": "./dist/defaults.mjs",
-      "default": "./dist/defaults.mjs"
+      "import": "./src/defaults.ts",
+      "default": "./src/defaults.ts"
     },
     "./errors": {
-      "types": "./dist/errors.d.mts",
-      "import": "./dist/errors.mjs",
-      "default": "./dist/errors.mjs"
+      "import": "./src/errors.ts",
+      "default": "./src/errors.ts"
     },
     "./format": {
-      "types": "./dist/format.d.mts",
-      "import": "./dist/format.mjs",
-      "default": "./dist/format.mjs"
+      "import": "./src/format.ts",
+      "default": "./src/format.ts"
     },
     "./openai-compatible-video": {
-      "types": "./dist/openai-compatible-video.d.mts",
-      "import": "./dist/openai-compatible-video.mjs",
-      "default": "./dist/openai-compatible-video.mjs"
+      "import": "./src/openai-compatible-video.ts",
+      "default": "./src/openai-compatible-video.ts"
     },
     "./output-extract": {
-      "types": "./dist/output-extract.d.mts",
-      "import": "./dist/output-extract.mjs",
-      "default": "./dist/output-extract.mjs"
+      "import": "./src/output-extract.ts",
+      "default": "./src/output-extract.ts"
     },
     "./provider-id": {
-      "types": "./dist/provider-id.d.mts",
-      "import": "./dist/provider-id.mjs",
-      "default": "./dist/provider-id.mjs"
+      "import": "./src/provider-id.ts",
+      "default": "./src/provider-id.ts"
     },
     "./provider-supports": {
-      "types": "./dist/provider-supports.d.mts",
-      "import": "./dist/provider-supports.mjs",
-      "default": "./dist/provider-supports.mjs"
+      "import": "./src/provider-supports.ts",
+      "default": "./src/provider-supports.ts"
     },
     "./types": {
-      "types": "./dist/types.d.mts",
-      "import": "./dist/types.mjs",
-      "default": "./dist/types.mjs"
+      "import": "./src/types.ts",
+      "default": "./src/types.ts"
     },
     "./video": {
-      "types": "./dist/video.d.mts",
-      "import": "./dist/video.mjs",
-      "default": "./dist/video.mjs"
+      "import": "./src/video.ts",
+      "default": "./src/video.ts"
     }
   },
   "scripts": {

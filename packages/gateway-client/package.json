@@ -6,23 +6,19 @@
     "dist"
   ],
   "type": "module",
-  "main": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
+  "main": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./readiness": {
-      "types": "./dist/readiness.d.mts",
-      "import": "./dist/readiness.mjs",
-      "default": "./dist/readiness.mjs"
+      "import": "./src/readiness.ts",
+      "default": "./src/readiness.ts"
     },
     "./timeouts": {
-      "types": "./dist/timeouts.d.mts",
-      "import": "./dist/timeouts.mjs",
-      "default": "./dist/timeouts.mjs"
+      "import": "./src/timeouts.ts",
+      "default": "./src/timeouts.ts"
     }
   },
   "scripts": {

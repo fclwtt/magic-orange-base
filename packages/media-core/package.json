@@ -6,63 +6,51 @@
     "dist"
   ],
   "type": "module",
-  "main": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
+  "main": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./base64": {
-      "types": "./dist/base64.d.mts",
-      "import": "./dist/base64.mjs",
-      "default": "./dist/base64.mjs"
+      "import": "./src/base64.ts",
+      "default": "./src/base64.ts"
     },
     "./constants": {
-      "types": "./dist/constants.d.mts",
-      "import": "./dist/constants.mjs",
-      "default": "./dist/constants.mjs"
+      "import": "./src/constants.ts",
+      "default": "./src/constants.ts"
     },
     "./content-length": {
-      "types": "./dist/content-length.d.mts",
-      "import": "./dist/content-length.mjs",
-      "default": "./dist/content-length.mjs"
+      "import": "./src/content-length.ts",
+      "default": "./src/content-length.ts"
     },
     "./file-name": {
-      "types": "./dist/file-name.d.mts",
-      "import": "./dist/file-name.mjs",
-      "default": "./dist/file-name.mjs"
+      "import": "./src/file-name.ts",
+      "default": "./src/file-name.ts"
     },
     "./inbound-path-policy": {
-      "types": "./dist/inbound-path-policy.d.mts",
-      "import": "./dist/inbound-path-policy.mjs",
-      "default": "./dist/inbound-path-policy.mjs"
+      "import": "./src/inbound-path-policy.ts",
+      "default": "./src/inbound-path-policy.ts"
     },
     "./inline-image-data-url": {
-      "types": "./dist/inline-image-data-url.d.mts",
-      "import": "./dist/inline-image-data-url.mjs",
-      "default": "./dist/inline-image-data-url.mjs"
+      "import": "./src/inline-image-data-url.ts",
+      "default": "./src/inline-image-data-url.ts"
     },
     "./media-source-url": {
-      "types": "./dist/media-source-url.d.mts",
-      "import": "./dist/media-source-url.mjs",
-      "default": "./dist/media-source-url.mjs"
+      "import": "./src/media-source-url.ts",
+      "default": "./src/media-source-url.ts"
     },
     "./mime": {
-      "types": "./dist/mime.d.mts",
-      "import": "./dist/mime.mjs",
-      "default": "./dist/mime.mjs"
+      "import": "./src/mime.ts",
+      "default": "./src/mime.ts"
     },
     "./read-byte-stream-with-limit": {
-      "types": "./dist/read-byte-stream-with-limit.d.mts",
-      "import": "./dist/read-byte-stream-with-limit.mjs",
-      "default": "./dist/read-byte-stream-with-limit.mjs"
+      "import": "./src/read-byte-stream-with-limit.ts",
+      "default": "./src/read-byte-stream-with-limit.ts"
     },
     "./read-response-with-limit": {
-      "types": "./dist/read-response-with-limit.d.mts",
-      "import": "./dist/read-response-with-limit.mjs",
-      "default": "./dist/read-response-with-limit.mjs"
+      "import": "./src/read-response-with-limit.ts",
+      "default": "./src/read-response-with-limit.ts"
     }
   },
   "dependencies": {

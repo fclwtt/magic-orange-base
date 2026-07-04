@@ -41,6 +41,72 @@ importers:
       '@mistralai/mistralai':
         specifier: 2.2.5
         version: 2.2.5
+      '@mo/acp-core':
+        specifier: workspace:*
+        version: link:packages/acp-core
+      '@mo/agent-core':
+        specifier: workspace:*
+        version: link:packages/agent-core
+      '@mo/fs-safe':
+        specifier: npm:@openclaw/fs-safe@0.3.0
+        version: '@openclaw/fs-safe@0.3.0'
+      '@mo/gateway-client':
+        specifier: workspace:*
+        version: link:packages/gateway-client
+      '@mo/gateway-protocol':
+        specifier: workspace:*
+        version: link:packages/gateway-protocol
+      '@mo/llm-core':
+        specifier: workspace:*
+        version: link:packages/llm-core
+      '@mo/llm-runtime':
+        specifier: workspace:*
+        version: link:packages/llm-runtime
+      '@mo/markdown-core':
+        specifier: workspace:*
+        version: link:packages/markdown-core
+      '@mo/media-core':
+        specifier: workspace:*
+        version: link:packages/media-core
+      '@mo/media-generation-core':
+        specifier: workspace:*
+        version: link:packages/media-generation-core
+      '@mo/media-understanding-common':
+        specifier: workspace:*
+        version: link:packages/media-understanding-common
+      '@mo/memory-host-sdk':
+        specifier: workspace:*
+        version: link:packages/memory-host-sdk
+      '@mo/model-catalog-core':
+        specifier: workspace:*
+        version: link:packages/model-catalog-core
+      '@mo/net-policy':
+        specifier: workspace:*
+        version: link:packages/net-policy
+      '@mo/normalization-core':
+        specifier: workspace:*
+        version: link:packages/normalization-core
+      '@mo/plugin-package-contract':
+        specifier: workspace:*
+        version: link:packages/plugin-package-contract
+      '@mo/plugin-sdk':
+        specifier: workspace:*
+        version: link:packages/plugin-sdk
+      '@mo/sdk':
+        specifier: workspace:*
+        version: link:packages/sdk
+      '@mo/speech-core':
+        specifier: workspace:*
+        version: link:packages/speech-core
+      '@mo/terminal-core':
+        specifier: workspace:*
+        version: link:packages/terminal-core
+      '@mo/tool-call-repair':
+        specifier: workspace:*
+        version: link:packages/tool-call-repair
+      '@mo/web-content-core':
+        specifier: workspace:*
+        version: link:packages/web-content-core
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)
@@ -4493,40 +4559,47 @@ packages:
     resolution: {integrity: sha512-9/tnj1fXeXIONgr+5FGwr3bkqd4jaORdr3X9/k++rzHW+UIzvgIeXrJKv43403gtuKp0BoxdzsFxe2qsAQhhkw==}
     cpu: [arm64]
     os: [darwin]
+    deprecated: This package has been replaced by @agentclientprotocol/codex-acp. Please migrate to continue receiving updates.
     hasBin: true
 
   '@zed-industries/codex-acp-darwin-x64@0.15.0':
     resolution: {integrity: sha512-2cmflnVYM5yzvNu4ldff6OsfLzQThFToPszCT3t7jytWuG28V+W1cUEGsvFJGNkGC1Wo29Z4w5LZ3wyfOkvPxg==}
     cpu: [x64]
     os: [darwin]
+    deprecated: This package has been replaced by @agentclientprotocol/codex-acp. Please migrate to continue receiving updates.
     hasBin: true
 
   '@zed-industries/codex-acp-linux-arm64@0.15.0':
     resolution: {integrity: sha512-ioCXCiZMd4v7Eqyed9Iz4xcPKsZbSH157wOitsWQKxUiX43c1Ti5fykZcrh9cNSLOgiGmI3V2nbYp0aTf66grQ==}
     cpu: [arm64]
     os: [linux]
+    deprecated: This package has been replaced by @agentclientprotocol/codex-acp. Please migrate to continue receiving updates.
     hasBin: true
 
   '@zed-industries/codex-acp-linux-x64@0.15.0':
     resolution: {integrity: sha512-WtqI8KGX9z7XvdkazumYraoDwpip5lFBRtFXoIwYCSBoDZdOqQsfNQndIfTDttfQ1BdZYKczDnrfbRaiIFU9UA==}
     cpu: [x64]
     os: [linux]
+    deprecated: This package has been replaced by @agentclientprotocol/codex-acp. Please migrate to continue receiving updates.
     hasBin: true
 
   '@zed-industries/codex-acp-win32-arm64@0.15.0':
     resolution: {integrity: sha512-L+OFIPOzAuxsImlq8E227MZxgujMLMEJSqiR9QjZq8fiIFCKh/HnxmvyXvjWaHbJdb1pZ09WKe3MNwV9ln/+GQ==}
     cpu: [arm64]
     os: [win32]
+    deprecated: This package has been replaced by @agentclientprotocol/codex-acp. Please migrate to continue receiving updates.
     hasBin: true
 
   '@zed-industries/codex-acp-win32-x64@0.15.0':
     resolution: {integrity: sha512-LDnADpCg1Rzbkyxs4hMaOvRwNa68KLp8CoNVom8ZE/sChSvcDrj/RCoMsZWrARJGWs7EQ9zYeLoeVk5VcVQoPQ==}
     cpu: [x64]
     os: [win32]
+    deprecated: This package has been replaced by @agentclientprotocol/codex-acp. Please migrate to continue receiving updates.
     hasBin: true
 
   '@zed-industries/codex-acp@0.15.0':
     resolution: {integrity: sha512-eAv7sGBeiYrYkOulF729nrM51szS7WIhBtugRj5wWq6csRKZUhAZfoUZlF8xUWdHPtOIzd/eT6MNG6gMHu6z0w==}
+    deprecated: This package has been replaced by @agentclientprotocol/codex-acp. Please migrate to continue receiving updates.
     hasBin: true
 
   abort-controller@3.0.0:
@@ -7528,6 +7601,7 @@ packages:
 
   uuid@8.3.0:
     resolution: {integrity: sha512-fX6Z5o4m6XsXBdli9g7DtWgAx+osMsRRZFKma1mIUsLCz6vRvv+pz5VNbyu9UEDzpMWulZfvpgb/cmDXVulYFQ==}
+    deprecated: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
     hasBin: true
 
   validate-npm-package-name@7.0.2:

@@ -6,33 +6,27 @@
     "dist"
   ],
   "type": "module",
-  "main": "./dist/index.mjs",
-  "types": "./dist/index.d.mts",
+  "main": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./number-coercion": {
-      "types": "./dist/number-coercion.d.mts",
-      "import": "./dist/number-coercion.mjs",
-      "default": "./dist/number-coercion.mjs"
+      "import": "./src/number-coercion.ts",
+      "default": "./src/number-coercion.ts"
     },
     "./record-coerce": {
-      "types": "./dist/record-coerce.d.mts",
-      "import": "./dist/record-coerce.mjs",
-      "default": "./dist/record-coerce.mjs"
+      "import": "./src/record-coerce.ts",
+      "default": "./src/record-coerce.ts"
     },
     "./string-coerce": {
-      "types": "./dist/string-coerce.d.mts",
-      "import": "./dist/string-coerce.mjs",
-      "default": "./dist/string-coerce.mjs"
+      "import": "./src/string-coerce.ts",
+      "default": "./src/string-coerce.ts"
     },
     "./string-normalization": {
-      "types": "./dist/string-normalization.d.mts",
-      "import": "./dist/string-normalization.mjs",
-      "default": "./dist/string-normalization.mjs"
+      "import": "./src/string-normalization.ts",
+      "default": "./src/string-normalization.ts"
     }
   },
   "scripts": {
