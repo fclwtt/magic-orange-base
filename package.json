@@ -1979,6 +1979,7 @@
     "@mo/acp-core": "workspace:*",
     "@mo/agent-core": "workspace:*",
     "@mo/fs-safe": "npm:@openclaw/fs-safe@0.3.0",
+    "@mo/proxyline": "npm:@openclaw/proxyline@0.3.3",
     "@mo/gateway-client": "workspace:*",
     "@mo/gateway-protocol": "workspace:*",
     "@mo/llm-core": "workspace:*",

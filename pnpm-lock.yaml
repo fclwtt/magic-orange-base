@@ -92,6 +92,9 @@ importers:
       '@mo/plugin-sdk':
         specifier: workspace:*
         version: link:packages/plugin-sdk
+      '@mo/proxyline':
+        specifier: npm:@openclaw/proxyline@0.3.3
+        version: '@openclaw/proxyline@0.3.3(undici@8.5.0)'
       '@mo/sdk':
         specifier: workspace:*
         version: link:packages/sdk
