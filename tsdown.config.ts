@@ -262,6 +262,8 @@ function normalizePackageId(id: string): string {
 }
 
 function shouldAlwaysBundleDependency(id: string): boolean {
+  // Always bundle all @mo/* workspace packages (mapped from @openclaw/* by normalizePackageId)
+  if (id.startsWith("@mo/")) return true;
   const n = normalizePackageId(id);
   return (
     n === "@openclaw/fs-safe" ||
