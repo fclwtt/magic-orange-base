@@ -85,7 +85,7 @@ function buildInputOptions(options: InputOptionsArg): InputOptionsReturn {
 
   // Build resolve aliases that map @mo/<pkg>/* imports to their workspace
   // source directories so rolldown can resolve them without pnpm symlinks.
-  const moAliases: Array<{ find: string; replacement: string }> = [];
+  const moAliases: Record<string, string> = {};
   const packagesDir = path.join(process.cwd(), "packages");
   for (const dirent of fs.readdirSync(packagesDir, { withFileTypes: true })) {
     if (!dirent.isDirectory()) continue;
@@ -97,7 +97,7 @@ function buildInputOptions(options: InputOptionsArg): InputOptionsReturn {
     const replacement = fs.existsSync(srcDir)
       ? `./packages/${dirent.name}/src/`
       : `./packages/${dirent.name}/`;
-    moAliases.push({ find: `${pj.name}/`, replacement });
+    moAliases[`${pj.name}/`] = replacement;
   }
 
   function isSuppressedLog(log: {
