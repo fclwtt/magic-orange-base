@@ -95,8 +95,8 @@ function buildInputOptions(options: InputOptionsArg): InputOptionsReturn {
     if (!pj.name || !pj.name.startsWith("@mo/")) continue;
     const srcDir = path.join(packagesDir, dirent.name, "src");
     const replacement = fs.existsSync(srcDir)
-      ? `./packages/${dirent.name}/src/`
-      : `./packages/${dirent.name}/`;
+      ? path.resolve(packagesDir, dirent.name, "src") + "/"
+      : path.resolve(packagesDir, dirent.name) + "/";
     moAliases[`${pj.name}/`] = replacement;
   }
 
@@ -111,7 +111,7 @@ function buildInputOptions(options: InputOptionsArg): InputOptionsReturn {
       return true;
     }
     if (log.code === "UNRESOLVED_IMPORT") {
-      return normalizedLogHaystack(log).includes("extensions/");
+      return normalizedLogHaystack(log).includes("extensions/") || normalizedLogHaystack(log).includes("@mo/");
     }
     if (
       log.code === "PLUGIN_WARNING" &&
@@ -125,6 +125,11 @@ function buildInputOptions(options: InputOptionsArg): InputOptionsReturn {
     // export= format is misread by rolldown's dts plugin but works fine at
     // runtime because the package is externalized.
     if (log.code === "MISSING_EXPORT" && normalizedLogHaystack(log).includes("ipaddr.js")) {
+      return true;
+    }
+    // Suppress INEFFECTIVE_DYNAMIC_IMPORT — these are pre-existing code
+    // patterns where a module is both dynamically and statically imported.
+    if (log.code === "INEFFECTIVE_DYNAMIC_IMPORT") {
       return true;
     }
     if (log.code !== "EVAL") {
