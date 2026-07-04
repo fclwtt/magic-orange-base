@@ -62,6 +62,10 @@ const PLUGIN_SDK_ENTRY_DTS_CACHE_OUTPUTS = [
   "dist/plugin-sdk/.boundary-entry-shims.stamp",
   ...pluginSdkEntrypoints.map((entry) => `packages/plugin-sdk/dist/src/plugin-sdk/${entry}.d.ts`),
 ];
+
+/** Steps that generate TypeScript declaration files and can be skipped when DTS build is disabled. */
+const SKIP_DTS_STEPS = new Set(["build:plugin-sdk:dts", "write-plugin-sdk-entry-dts"]);
+
 const PNPM_STEP_NODE_FALLBACKS = new Map([
   ["plugins:assets:build", ["scripts/bundled-plugin-assets.mjs", "--phase", "build"]],
   [
@@ -640,6 +644,15 @@ if (isMainModule()) {
         const durationMs = performance.now() - startedAt;
         timings.push({ label: step.label, status: "cached", durationMs });
         console.error(`[build-all] ${step.label} (cached) ${formatBuildAllDuration(durationMs)}`);
+        continue;
+      }
+      if (
+        (process.env.OPENCLAW_RUN_NODE_SKIP_DTS_BUILD === "1" ||
+          process.env.MO_RUN_NODE_SKIP_DTS_BUILD === "1") &&
+        SKIP_DTS_STEPS.has(step.label)
+      ) {
+        timings.push({ label: step.label, status: "skipped", durationMs: 0 });
+        console.error(`[build-all] ${step.label} (skipped: DTS build disabled)`);
         continue;
       }
       console.error(`[build-all] ${step.label}`);
