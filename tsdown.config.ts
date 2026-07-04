@@ -83,6 +83,23 @@ function buildInputOptions(options: InputOptionsArg): InputOptionsReturn {
   const previousOnLog = typeof options.onLog === "function" ? options.onLog : undefined;
   const previousExternal = (options as { external?: unknown }).external;
 
+  // Build resolve aliases that map @mo/<pkg>/* imports to their workspace
+  // source directories so rolldown can resolve them without pnpm symlinks.
+  const moAliases: Array<{ find: string; replacement: string }> = [];
+  const packagesDir = path.join(process.cwd(), "packages");
+  for (const dirent of fs.readdirSync(packagesDir, { withFileTypes: true })) {
+    if (!dirent.isDirectory()) continue;
+    const pjPath = path.join(packagesDir, dirent.name, "package.json");
+    if (!fs.existsSync(pjPath)) continue;
+    const pj = JSON.parse(fs.readFileSync(pjPath, "utf8")) as { name?: string };
+    if (!pj.name || !pj.name.startsWith("@mo/")) continue;
+    const srcDir = path.join(packagesDir, dirent.name, "src");
+    const replacement = fs.existsSync(srcDir)
+      ? `./packages/${dirent.name}/src/`
+      : `./packages/${dirent.name}/`;
+    moAliases.push({ find: `${pj.name}/`, replacement });
+  }
+
   function isSuppressedLog(log: {
     code?: string;
     message?: string;
@@ -120,6 +137,7 @@ function buildInputOptions(options: InputOptionsArg): InputOptionsReturn {
   return {
     ...options,
     resolve: {
+      alias: moAliases,
       extensionAlias: {
         ".js": [".ts", ".tsx", ".js"],
         ".mjs": [".mts", ".mjs"],
