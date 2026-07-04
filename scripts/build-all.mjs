@@ -64,7 +64,11 @@ const PLUGIN_SDK_ENTRY_DTS_CACHE_OUTPUTS = [
 ];
 
 /** Steps that generate TypeScript declaration files and can be skipped when DTS build is disabled. */
-const SKIP_DTS_STEPS = new Set(["build:plugin-sdk:dts", "write-plugin-sdk-entry-dts"]);
+const SKIP_DTS_STEPS = new Set([
+  "build:plugin-sdk:dts",
+  "write-plugin-sdk-entry-dts",
+  "check-plugin-sdk-exports",
+]);
 
 const PNPM_STEP_NODE_FALLBACKS = new Map([
   ["plugins:assets:build", ["scripts/bundled-plugin-assets.mjs", "--phase", "build"]],
